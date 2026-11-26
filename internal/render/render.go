@@ -7,6 +7,8 @@ package render
 
 import (
 	"fmt"
+	"math"
+	"unicode/utf8"
 
 	"github.com/gdamore/tcell/v2"
 
@@ -28,6 +30,8 @@ var (
 	colBorder     = tcell.NewRGBColor(90, 90, 120)
 	colText       = tcell.NewRGBColor(200, 200, 215)
 	colDim        = tcell.NewRGBColor(110, 110, 130)
+	colPaddle     = tcell.NewRGBColor(120, 210, 255)
+	colBall       = tcell.NewRGBColor(255, 255, 255)
 )
 
 // Stats are loop measurements shown when debugging.
@@ -49,14 +53,13 @@ func New() *Renderer {
 // Draw paints one frame. It does not call Show, and it only writes the cells
 // it owns: the caller clears the screen when the layout changes (resize).
 func (r *Renderer) Draw(s tcell.Screen, g *game.Game, st Stats) {
-	sw, sh := s.Size()
-	// Origin of the playfield's top-left cell; row oy-2 is the HUD.
-	ox := max((sw-MinCols)/2, 0) + 1
-	oy := max((sh-MinRows)/2, 0) + 2
+	ox, oy := Origin(s.Size())
 
 	for i := range r.pix {
 		r.pix[i] = colBackground
 	}
+	r.rect(g.Paddle.Left(), game.PaddleTop, g.Paddle.W, game.PaddleHeight, colPaddle)
+	r.rect(g.Ball.Pos.X-game.BallSize/2, g.Ball.Pos.Y-game.BallSize/2, game.BallSize, game.BallSize, colBall)
 
 	r.drawBorder(s, ox, oy)
 	r.flush(s, ox, oy)
@@ -65,13 +68,36 @@ func (r *Renderer) Draw(s tcell.Screen, g *game.Game, st Stats) {
 	// so the HUD row is composed in full and each cell written exactly once.
 	hud := newLine(cols)
 	hud.put(0, tcell.StyleDefault.Foreground(colText).Bold(true), "TX-Ball")
-	hint := "q quit"
-	hud.put(cols-len(hint), tcell.StyleDefault.Foreground(colDim), hint)
+	hint := "mouse or ←/→ move · q quit"
+	hud.put(cols-utf8.RuneCountInString(hint), tcell.StyleDefault.Foreground(colDim), hint)
 	if st.Show {
 		dbg := fmt.Sprintf("fps %d  ups %d  t %.1fs", st.FPS, st.UPS, g.Time)
 		hud.put((cols-len(dbg))/2, tcell.StyleDefault.Foreground(colDim), dbg)
 	}
 	hud.draw(s, ox, oy-2)
+}
+
+// Origin returns the screen cell of the playfield's top-left corner for a
+// terminal of the given size. The HUD sits two rows above it.
+func Origin(screenW, screenH int) (ox, oy int) {
+	return max((screenW-MinCols)/2, 0) + 1, max((screenH-MinRows)/2, 0) + 2
+}
+
+// WorldX converts a screen column to the world X of that cell's centre.
+func WorldX(screenW, screenH, col int) float64 {
+	ox, _ := Origin(screenW, screenH)
+	return float64(col-ox) + 0.5
+}
+
+// rect fills a world-space rectangle, snapping its corner to the nearest
+// pixel. This is the only place world coordinates are rounded.
+func (r *Renderer) rect(x, y, w, h float64, c tcell.Color) {
+	x0, y0 := int(math.Round(x)), int(math.Round(y))
+	for py := y0; py < y0+int(math.Round(h)); py++ {
+		for px := x0; px < x0+int(math.Round(w)); px++ {
+			r.set(px, py, c)
+		}
+	}
 }
 
 // set colours one world pixel, ignoring anything outside the playfield.

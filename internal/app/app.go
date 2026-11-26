@@ -24,6 +24,10 @@ const (
 	// maxFrame caps how much simulated time one frame may catch up on, so a
 	// suspended process doesn't fast-forward when it resumes.
 	maxFrame = 0.25
+
+	// keyHold is how long one key event keeps the paddle moving. Terminals
+	// report key repeats but not releases, so each repeat extends the move.
+	keyHold = 120 * time.Millisecond
 )
 
 // Options configure a run.
@@ -64,6 +68,7 @@ func Run(opts Options) (err error) {
 // All game state is touched from this goroutine only.
 func loop(ctx context.Context, s tcell.Screen, opts Options) error {
 	s.HideCursor()
+	s.EnableMouse(tcell.MouseMotionEvents)
 
 	done := make(chan struct{})
 	defer close(done)
@@ -93,6 +98,9 @@ func loop(ctx context.Context, s tcell.Screen, opts Options) error {
 		acc          float64
 		frames, upds int
 		statsAt      = start
+
+		keyDir   float64
+		keyUntil time.Time
 	)
 
 	ticker := time.NewTicker(time.Second / renderHz)
@@ -109,6 +117,13 @@ func loop(ctx context.Context, s tcell.Screen, opts Options) error {
 				if isQuit(ev) {
 					return nil
 				}
+				if dir := steer(ev); dir != 0 {
+					keyDir, keyUntil = dir, time.Now().Add(keyHold)
+				}
+			case *tcell.EventMouse:
+				col, _ := ev.Position()
+				sw, sh := s.Size()
+				in.PaddleX, in.HasMouse = render.WorldX(sw, sh, col), true
 			case *tcell.EventResize:
 				// The playfield re-centres, so drop what was drawn at
 				// the old origin.
@@ -124,10 +139,17 @@ func loop(ctx context.Context, s tcell.Screen, opts Options) error {
 
 			acc += min(now.Sub(last).Seconds(), maxFrame)
 			last = now
+			in.Move = 0
+			if now.Before(keyUntil) {
+				in.Move = keyDir
+			}
 			for acc >= dt {
 				g.Update(dt, in)
 				acc -= dt
 				upds++
+				// A mouse position is a one-shot jump; once applied, the
+				// keyboard is free to move the paddle away from it.
+				in.HasMouse = false
 			}
 
 			frames++
@@ -151,4 +173,22 @@ func isQuit(ev *tcell.EventKey) bool {
 		return ev.Rune() == 'q' || ev.Rune() == 'Q'
 	}
 	return false
+}
+
+// steer maps a key to a paddle direction: -1 left, +1 right, 0 neither.
+func steer(ev *tcell.EventKey) float64 {
+	switch ev.Key() {
+	case tcell.KeyLeft:
+		return -1
+	case tcell.KeyRight:
+		return 1
+	case tcell.KeyRune:
+		switch ev.Rune() {
+		case 'a', 'A':
+			return -1
+		case 'd', 'D':
+			return 1
+		}
+	}
+	return 0
 }

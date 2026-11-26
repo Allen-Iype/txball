@@ -83,3 +83,82 @@ func TestLoopDrawsAndStopsOnCancel(t *testing.T) {
 		t.Errorf("border corner = %q, want ┌", string(got))
 	}
 }
+
+// paddleCols reports which columns of the paddle's screen row are lit.
+func paddleCols(s tcell.SimulationScreen) (first, last int) {
+	cells, w, _ := s.GetContents()
+	_, oy := render.Origin(s.Size())
+	row := cells[(oy+20)*w:][:w] // PaddleTop=40 is cell row 20
+	// The row below the paddle is always empty, so it gives the background.
+	bg, _, _ := cells[(oy+21)*w+1].Style.Decompose()
+	first, last = -1, -1
+	for x := 1; x < w-1; x++ {
+		if fg, _, _ := row[x].Style.Decompose(); fg != bg {
+			if first < 0 {
+				first = x
+			}
+			last = x
+		}
+	}
+	return first, last
+}
+
+func TestLoopSteersPaddle(t *testing.T) {
+	tests := []struct {
+		name      string
+		inject    func(s tcell.SimulationScreen)
+		wantFirst int
+		wantLast  int
+	}{
+		// Field origin is column 1; the paddle is 12 wide and starts centred
+		// on world x=40, i.e. columns 35..46.
+		{"untouched", func(tcell.SimulationScreen) {}, 35, 46},
+		{"mouse", func(s tcell.SimulationScreen) { s.InjectMouse(21, 5, tcell.ButtonNone, tcell.ModNone) }, 16, 27},
+		{"mouse past left wall clamps", func(s tcell.SimulationScreen) { s.InjectMouse(0, 5, tcell.ButtonNone, tcell.ModNone) }, 1, 12},
+		{"mouse past right wall clamps", func(s tcell.SimulationScreen) { s.InjectMouse(81, 5, tcell.ButtonNone, tcell.ModNone) }, 69, 80},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			s := newSim(t)
+			ctx, cancel := context.WithCancel(context.Background())
+			errc := runLoop(s, ctx)
+			tt.inject(s)
+			time.Sleep(150 * time.Millisecond)
+			cancel()
+			<-errc
+			first, last := paddleCols(s)
+			if first != tt.wantFirst || last != tt.wantLast {
+				t.Errorf("paddle columns = %d..%d, want %d..%d", first, last, tt.wantFirst, tt.wantLast)
+			}
+		})
+	}
+}
+
+func TestLoopKeyboardMovesPaddle(t *testing.T) {
+	tests := []struct {
+		name  string
+		key   tcell.Key
+		r     rune
+		right bool
+	}{
+		{"left arrow", tcell.KeyLeft, 0, false},
+		{"right arrow", tcell.KeyRight, 0, true},
+		{"a", tcell.KeyRune, 'a', false},
+		{"d", tcell.KeyRune, 'd', true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			s := newSim(t)
+			ctx, cancel := context.WithCancel(context.Background())
+			errc := runLoop(s, ctx)
+			s.InjectKey(tt.key, tt.r, tcell.ModNone)
+			time.Sleep(300 * time.Millisecond)
+			cancel()
+			<-errc
+			first, _ := paddleCols(s)
+			if moved := first > 35; first == 35 || moved != tt.right {
+				t.Errorf("paddle starts at column %d, want it moved %s of 35", first, map[bool]string{true: "right", false: "left"}[tt.right])
+			}
+		})
+	}
+}
