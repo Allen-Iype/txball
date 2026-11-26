@@ -3,8 +3,7 @@
 A brick-breaker for the terminal, written in Go with [tcell](https://github.com/gdamore/tcell).
 Mouse-controlled paddle, half-block graphics, levels in plain text files and seven power-ups.
 
-<!-- TODO: replace with a real screenshot or GIF -->
-![TX-Ball screenshot](docs/screenshot.png)
+![TX-Ball playing itself in demo mode](docs/demo.gif)
 
 ## Install
 
@@ -79,6 +78,7 @@ You only lose a life when the last ball is gone.
 |---|---|
 | `-bell` | Ring the terminal bell when a ball hits a brick or the paddle, and when a life is lost |
 | `-level N` | Start on level N |
+| `-demo` | Let the game play itself |
 | `-debug` | Show FPS and update rate; keys `1`–`7` drop a capsule of each kind |
 
 The high score is kept in `$XDG_CONFIG_HOME/txball/highscore`, or `~/.config/txball/highscore`
@@ -126,8 +126,16 @@ go test ./...
 | `internal/app` | Screen lifecycle, input and the game loop |
 | `internal/score` | High-score file |
 | `levels` | Built-in level files |
+| `docs` | The demo GIF and the tape that records it |
 
 The simulation runs at a fixed 120 updates per second in floating-point world coordinates, where
 one unit is one half-block "pixel"; the renderer draws at 60 frames per second and is the only
 place positions are rounded. Ball movement is swept rather than stepped, so a ball can't pass
 through a brick however fast it is going.
+
+The GIF above is a terminal recording made with [VHS](https://github.com/charmbracelet/vhs) from
+`docs/demo.tape`, using `-demo` because VHS can't move a mouse. To re-record it:
+
+```sh
+vhs docs/demo.tape
+```

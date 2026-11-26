@@ -44,6 +44,8 @@ type Options struct {
 	Debug bool
 	// Level is the 1-based level to start on; 0 means the first.
 	Level int
+	// Demo makes the game play itself.
+	Demo bool
 	// Bell rings the terminal bell when a ball hits something.
 	Bell bool
 	// ScoreFile is where the high score is saved; empty means don't save.
@@ -161,6 +163,7 @@ func loop(ctx context.Context, s tcell.Screen, g *game.Game, opts Options) (err 
 		// fits is whether the terminal was big enough last frame.
 		fits     = true
 		lastBell time.Time
+		auto     demo
 		// screenW and screenH are the size the last frame was drawn at.
 		screenW, screenH = s.Size()
 	)
@@ -239,6 +242,9 @@ func loop(ctx context.Context, s tcell.Screen, g *game.Game, opts Options) (err 
 			in.Move = 0
 			if now.Before(keyUntil) {
 				in.Move = keyDir
+			}
+			if opts.Demo {
+				auto.steer(g, &in, now.Sub(start).Seconds(), 1.0/renderHz)
 			}
 			for acc >= dt {
 				g.Update(dt, in)
