@@ -27,6 +27,9 @@ const (
 	MaxBounceAngle = 60 * math.Pi / 180
 
 	ballHalf = BallSize / 2
+
+	// maxBounces bounds the contacts resolved for one ball in one step.
+	maxBounces = 8
 )
 
 // Input is the player's intent for a single update step.
@@ -66,11 +69,12 @@ type Game struct {
 
 	Paddle Paddle
 	Ball   Ball
+	Bricks Grid
 }
 
 // New returns a game ready for its first Update.
 func New() *Game {
-	g := &Game{Paddle: Paddle{X: Width / 2, W: PaddleWidth}}
+	g := &Game{Paddle: Paddle{X: Width / 2, W: PaddleWidth}, Bricks: demoGrid()}
 	g.serve()
 	return g
 }
@@ -96,26 +100,92 @@ func (g *Game) Update(dt float64, in Input) {
 		g.Paddle.moveTo(g.Paddle.X + clamp(in.Move, -1, 1)*PaddleKeySpeed*dt)
 	}
 
-	g.stepBall(dt)
-}
+	g.moveBall(&g.Ball, dt)
 
-func (g *Game) stepBall(dt float64) {
-	b, p := &g.Ball, g.Paddle
-
-	prevBottom := b.Pos.Y + ballHalf
-	b.Pos = b.Pos.Add(b.Vel.Scale(dt))
-	b.Pos, b.Vel = bounceWalls(b.Pos, b.Vel, ballHalf, Width)
-
-	// The paddle only counts when the ball comes down onto its top face.
-	// Testing the horizontal overlap against the paddle's current position
-	// means a paddle that jumped under the ball this step still catches it.
-	crossedTop := b.Vel.Y > 0 && prevBottom <= PaddleTop && b.Pos.Y+ballHalf >= PaddleTop
-	if crossedTop && b.Pos.X+ballHalf > p.Left() && b.Pos.X-ballHalf < p.Right() {
-		b.Pos.Y = PaddleTop - ballHalf
-		b.Vel = paddleBounce((b.Pos.X-p.X)/(p.W/2), b.Vel.Len())
-	}
-
-	if b.Pos.Y-ballHalf > Height {
+	if g.Ball.Pos.Y-ballHalf > Height {
 		g.serve()
 	}
+	if g.Bricks.Remaining() == 0 {
+		g.Bricks = demoGrid()
+		g.serve()
+	}
+}
+
+// contact is the first thing a moving ball touches.
+type contact struct {
+	t      float64 // fraction of the displacement travelled
+	n      Vec     // surface normal
+	paddle bool
+	brick  bool
+	c, r   int // brick cell, when brick is set
+}
+
+// moveBall advances b by dt, resolving every contact along the way. The
+// move is swept rather than stepped: each pass finds the earliest contact
+// on the remaining path, moves the ball exactly there, bounces it, and
+// carries on with the time left. Nothing can be tunnelled through, whatever
+// the speed.
+func (g *Game) moveBall(b *Ball, dt float64) {
+	for range maxBounces {
+		d := b.Vel.Scale(dt)
+		hit, ok := g.firstContact(b.Pos, d)
+		if !ok {
+			b.Pos = b.Pos.Add(d)
+			return
+		}
+		b.Pos = b.Pos.Add(d.Scale(hit.t))
+		dt *= 1 - hit.t
+
+		switch {
+		case hit.paddle:
+			b.Vel = paddleBounce((b.Pos.X-g.Paddle.X)/(g.Paddle.W/2), b.Vel.Len())
+		case hit.brick:
+			b.Vel = reflect(b.Vel, hit.n)
+			g.Bricks[hit.r][hit.c].Alive = false
+		default:
+			b.Vel = reflect(b.Vel, hit.n)
+		}
+	}
+}
+
+// firstContact finds the earliest contact for a ball at pos moving by d.
+// Ties go to walls, then the paddle, then bricks in row order; whatever
+// loses a tie is still in the way on the next pass and is hit at t=0.
+func (g *Game) firstContact(pos, d Vec) (best contact, ok bool) {
+	if t, n, hit := sweepWalls(pos, ballHalf, d, Width); hit {
+		best, ok = contact{t: t, n: n}, true
+	}
+	if t, hit := sweepPaddle(pos, d, g.Paddle); hit && (!ok || t < best.t) {
+		best, ok = contact{t: t, paddle: true}, true
+	}
+	for r := range g.Bricks {
+		for c := range g.Bricks[r] {
+			if !g.Bricks[r][c].Alive {
+				continue
+			}
+			t, n, hit := sweepAABB(pos, ballHalf, d, BrickRect(c, r))
+			if !hit || (ok && t >= best.t) {
+				continue
+			}
+			if n = g.Bricks.exposed(c, r, n); n == (Vec{}) {
+				continue
+			}
+			best, ok = contact{t: t, n: n, brick: true, c: c, r: r}, true
+		}
+	}
+	return best, ok
+}
+
+// sweepPaddle reports when a ball at pos moving by d lands on the paddle.
+// Only the top face counts, and only from above. The horizontal test uses
+// the paddle's current position, so a paddle that jumped under the ball
+// this step still catches it.
+func sweepPaddle(pos, d Vec, p Paddle) (t float64, ok bool) {
+	const plane = PaddleTop - ballHalf
+	if d.Y <= 0 || pos.Y > plane || pos.Y+d.Y < plane {
+		return 0, false
+	}
+	t = (plane - pos.Y) / d.Y
+	x := pos.X + d.X*t
+	return t, x+ballHalf > p.Left() && x-ballHalf < p.Right()
 }

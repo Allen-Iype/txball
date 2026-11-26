@@ -32,6 +32,17 @@ var (
 	colDim        = tcell.NewRGBColor(110, 110, 130)
 	colPaddle     = tcell.NewRGBColor(120, 210, 255)
 	colBall       = tcell.NewRGBColor(255, 255, 255)
+
+	// brickPalette is indexed by game.Brick.Color, wrapping around.
+	brickPalette = []tcell.Color{
+		tcell.NewRGBColor(235, 80, 90),
+		tcell.NewRGBColor(245, 150, 60),
+		tcell.NewRGBColor(240, 210, 70),
+		tcell.NewRGBColor(110, 205, 95),
+		tcell.NewRGBColor(70, 190, 200),
+		tcell.NewRGBColor(90, 130, 240),
+		tcell.NewRGBColor(175, 110, 230),
+	}
 )
 
 // Stats are loop measurements shown when debugging.
@@ -58,6 +69,7 @@ func (r *Renderer) Draw(s tcell.Screen, g *game.Game, st Stats) {
 	for i := range r.pix {
 		r.pix[i] = colBackground
 	}
+	r.bricks(&g.Bricks)
 	r.rect(g.Paddle.Left(), game.PaddleTop, g.Paddle.W, game.PaddleHeight, colPaddle)
 	r.rect(g.Ball.Pos.X-game.BallSize/2, g.Ball.Pos.Y-game.BallSize/2, game.BallSize, game.BallSize, colBall)
 
@@ -98,6 +110,28 @@ func (r *Renderer) rect(x, y, w, h float64, c tcell.Color) {
 			r.set(px, py, c)
 		}
 	}
+}
+
+// bricks draws the grid. Each brick's last pixel column is shaded so that
+// neighbours of the same colour read as separate tiles.
+func (r *Renderer) bricks(grid *game.Grid) {
+	for row := range grid {
+		for col, b := range grid[row] {
+			if !b.Alive {
+				continue
+			}
+			c := brickPalette[int(b.Color)%len(brickPalette)]
+			box := game.BrickRect(col, row)
+			r.rect(box.Min.X, box.Min.Y, game.BrickW-1, game.BrickH, c)
+			r.rect(box.Max.X-1, box.Min.Y, 1, game.BrickH, shade(c, 0.6))
+		}
+	}
+}
+
+// shade scales a colour's brightness by k.
+func shade(c tcell.Color, k float64) tcell.Color {
+	r, g, b := c.RGB()
+	return tcell.NewRGBColor(int32(float64(r)*k), int32(float64(g)*k), int32(float64(b)*k))
 }
 
 // set colours one world pixel, ignoring anything outside the playfield.
