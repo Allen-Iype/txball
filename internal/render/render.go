@@ -8,6 +8,7 @@ package render
 import (
 	"fmt"
 	"math"
+	"strings"
 	"unicode/utf8"
 
 	"github.com/gdamore/tcell/v2"
@@ -32,6 +33,12 @@ var (
 	colDim        = tcell.NewRGBColor(110, 110, 130)
 	colPaddle     = tcell.NewRGBColor(120, 210, 255)
 	colBall       = tcell.NewRGBColor(255, 255, 255)
+	colLife       = tcell.NewRGBColor(235, 80, 90)
+	colTitle      = tcell.NewRGBColor(255, 225, 120)
+
+	// overlayRow is the playfield cell row for messages: the gap between
+	// the lowest bricks and the paddle.
+	overlayRow = 17
 
 	// brickPalette is indexed by game.Brick.Color, wrapping around.
 	brickPalette = []tcell.Color{
@@ -73,20 +80,54 @@ func (r *Renderer) Draw(s tcell.Screen, g *game.Game, st Stats) {
 	r.rect(g.Paddle.Left(), game.PaddleTop, g.Paddle.W, game.PaddleHeight, colPaddle)
 	r.rect(g.Ball.Pos.X-game.BallSize/2, g.Ball.Pos.Y-game.BallSize/2, game.BallSize, game.BallSize, colBall)
 
-	r.drawBorder(s, ox, oy)
-	r.flush(s, ox, oy)
-
 	// The screen is not cleared per frame (tcell would repaint every cell),
-	// so the HUD row is composed in full and each cell written exactly once.
-	hud := newLine(cols)
+	// so every cell is written exactly once: text rows are composed off
+	// screen, and the playfield skips the cells its overlay will cover.
+	msg := overlay(g)
+	r.flush(s, ox, oy, msg)
+	msg.draw(s, ox, oy+overlayRow)
+	r.drawBorder(s, ox, oy, st, g)
+
+	hud := newLine(cols, ' ', tcell.StyleDefault)
 	hud.put(0, tcell.StyleDefault.Foreground(colText).Bold(true), "TX-Ball")
-	hint := "mouse or ←/→ move · q quit"
-	hud.put(cols-utf8.RuneCountInString(hint), tcell.StyleDefault.Foreground(colDim), hint)
-	if st.Show {
-		dbg := fmt.Sprintf("fps %d  ups %d  t %.1fs", st.FPS, st.UPS, g.Time)
-		hud.put((cols-len(dbg))/2, tcell.StyleDefault.Foreground(colDim), dbg)
-	}
+	level := fmt.Sprintf("LEVEL %d", g.Level)
+	hud.put((cols-len(level))/2, tcell.StyleDefault.Foreground(colText), level)
+	score := fmt.Sprintf("%06d", g.Score)
+	hud.put(cols-len(score), tcell.StyleDefault.Foreground(colText).Bold(true), score)
+	lives := strings.Repeat("♥", max(g.Lives, 0))
+	hud.put(cols-len(score)-2-utf8.RuneCountInString(lives), tcell.StyleDefault.Foreground(colLife), lives)
 	hud.draw(s, ox, oy-2)
+}
+
+// overlay returns the message for the current state, centred on a
+// playfield-wide line whose untouched cells are transparent, or nil.
+func overlay(g *game.Game) *line {
+	var title, hint string
+	switch g.State {
+	case game.StateServe:
+		hint = "click or space to launch"
+	case game.StatePaused:
+		title, hint = "PAUSED", "p to resume"
+	case game.StateLevelClear:
+		title, hint = fmt.Sprintf("LEVEL %d CLEARED", g.Level), "click or space for the next level"
+	case game.StateGameOver:
+		title, hint = "GAME OVER", fmt.Sprintf("score %d · click or space to play again", g.Score)
+	default:
+		return nil
+	}
+	l := newLine(cols, 0, tcell.StyleDefault)
+	text := hint
+	if title != "" {
+		text = title + "  " + hint
+	}
+	x := (cols - utf8.RuneCountInString(text)) / 2
+	base := tcell.StyleDefault.Background(colBackground)
+	if title != "" {
+		l.put(x, base.Foreground(colTitle).Bold(true), title+"  ")
+		x += utf8.RuneCountInString(title) + 2
+	}
+	l.put(x, base.Foreground(colText), hint)
+	return l
 }
 
 // Origin returns the screen cell of the playfield's top-left corner for a
@@ -142,23 +183,29 @@ func (r *Renderer) set(x, y int, c tcell.Color) {
 	r.pix[y*game.Width+x] = c
 }
 
-func (r *Renderer) flush(s tcell.Screen, ox, oy int) {
+// flush emits the pixel buffer as half blocks, leaving alone the cells of
+// the overlay row that skip (which may be nil) has text in.
+func (r *Renderer) flush(s tcell.Screen, ox, oy int, skip *line) {
 	for cy := range rows {
 		top := r.pix[2*cy*game.Width:]
 		bot := r.pix[(2*cy+1)*game.Width:]
 		for cx := range cols {
+			if cy == overlayRow && skip.covers(cx) {
+				continue
+			}
 			st := tcell.StyleDefault.Foreground(top[cx]).Background(bot[cx])
 			s.SetContent(ox+cx, oy+cy, '▀', nil, st)
 		}
 	}
 }
 
-func (r *Renderer) drawBorder(s tcell.Screen, ox, oy int) {
+// drawBorder frames the playfield. The bottom edge carries the key hints
+// and, when enabled, the loop stats.
+func (r *Renderer) drawBorder(s tcell.Screen, ox, oy int, stats Stats, g *game.Game) {
 	st := tcell.StyleDefault.Foreground(colBorder)
 	l, rt, t, b := ox-1, ox+cols, oy-1, oy+rows
 	for x := ox; x < rt; x++ {
 		s.SetContent(x, t, '─', nil, st)
-		s.SetContent(x, b, '─', nil, st)
 	}
 	for y := oy; y < b; y++ {
 		s.SetContent(l, y, '│', nil, st)
@@ -168,18 +215,28 @@ func (r *Renderer) drawBorder(s tcell.Screen, ox, oy int) {
 	s.SetContent(rt, t, '┐', nil, st)
 	s.SetContent(l, b, '└', nil, st)
 	s.SetContent(rt, b, '┘', nil, st)
+
+	bottom := newLine(cols, '─', st)
+	dim := tcell.StyleDefault.Foreground(colDim)
+	hint := " mouse or ←/→ move · p pause · q quit "
+	bottom.put(cols-2-utf8.RuneCountInString(hint), dim, hint)
+	if stats.Show {
+		bottom.put(2, dim, fmt.Sprintf(" fps %d · ups %d · t %.1fs ", stats.FPS, stats.UPS, g.Time))
+	}
+	bottom.draw(s, ox, b)
 }
 
-// line is one row of styled text, composed off-screen.
+// line is one row of styled text, composed off-screen. Cells holding the
+// zero rune are transparent: draw leaves the screen alone there.
 type line struct {
 	runes  []rune
 	styles []tcell.Style
 }
 
-func newLine(n int) *line {
+func newLine(n int, fill rune, st tcell.Style) *line {
 	l := &line{runes: make([]rune, n), styles: make([]tcell.Style, n)}
 	for i := range l.runes {
-		l.runes[i] = ' '
+		l.runes[i], l.styles[i] = fill, st
 	}
 	return l
 }
@@ -194,8 +251,18 @@ func (l *line) put(x int, st tcell.Style, str string) {
 	}
 }
 
+// covers reports whether column x holds text. A nil line covers nothing.
+func (l *line) covers(x int) bool {
+	return l != nil && l.runes[x] != 0
+}
+
 func (l *line) draw(s tcell.Screen, x, y int) {
+	if l == nil {
+		return
+	}
 	for i, ch := range l.runes {
-		s.SetContent(x+i, y, ch, nil, l.styles[i])
+		if ch != 0 {
+			s.SetContent(x+i, y, ch, nil, l.styles[i])
+		}
 	}
 }

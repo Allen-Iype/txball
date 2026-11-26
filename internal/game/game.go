@@ -30,7 +30,51 @@ const (
 
 	// maxBounces bounds the contacts resolved for one ball in one step.
 	maxBounces = 8
+
+	StartLives = 3
+	BrickScore = 10
+	// LevelSpeedup is the fraction of BallSpeed added per level, up to
+	// MaxSpeedup.
+	LevelSpeedup = 0.08
+	MaxSpeedup   = 0.8
+
+	// serveOffset is where the ball waits on the paddle, as a fraction of
+	// its half-width. Being off-centre gives the launch a slight angle.
+	serveOffset = 0.25
+	// promptDelay is how long the level-clear and game-over screens ignore
+	// the launch button, so a click meant for the game doesn't dismiss them.
+	promptDelay = 0.6
 )
+
+// State is the phase of play.
+type State uint8
+
+const (
+	// StateServe: the ball rides the paddle until launched.
+	StateServe State = iota
+	StatePlaying
+	StatePaused
+	// StateLevelClear: every brick is gone; launch starts the next level.
+	StateLevelClear
+	// StateGameOver: no lives left; launch starts a new game.
+	StateGameOver
+)
+
+func (s State) String() string {
+	switch s {
+	case StateServe:
+		return "Serve"
+	case StatePlaying:
+		return "Playing"
+	case StatePaused:
+		return "Paused"
+	case StateLevelClear:
+		return "LevelClear"
+	case StateGameOver:
+		return "GameOver"
+	}
+	return "State(?)"
+}
 
 // Input is the player's intent for a single update step.
 type Input struct {
@@ -40,6 +84,10 @@ type Input struct {
 	HasMouse bool
 	// Move is keyboard steering from -1 (left) to +1 (right).
 	Move float64
+	// Launch and Pause are button presses. The caller sets them for one
+	// update only; they are edges, not held states.
+	Launch bool
+	Pause  bool
 }
 
 // Paddle is the player's bat. X is its centre.
@@ -62,36 +110,69 @@ type Ball struct {
 
 // Game is the whole simulation state.
 type Game struct {
-	// Ticks counts fixed updates since the game started.
+	// Ticks counts fixed updates since the game started, excluding pauses.
 	Ticks uint64
 	// Time is the simulated time in seconds.
 	Time float64
 
+	State State
+	Level int // 1-based
+	Lives int
+	Score int
+
 	Paddle Paddle
 	Ball   Ball
 	Bricks Grid
+
+	// since is how long the game has been in State.
+	since float64
+	// resume is the state to return to from StatePaused.
+	resume State
 }
 
-// New returns a game ready for its first Update.
+// New returns a game at the start of level 1, waiting to serve.
 func New() *Game {
-	g := &Game{Paddle: Paddle{X: Width / 2, W: PaddleWidth}, Bricks: demoGrid()}
-	g.serve()
+	g := &Game{
+		Level:  1,
+		Lives:  StartLives,
+		Paddle: Paddle{X: Width / 2, W: PaddleWidth},
+		Bricks: demoGrid(),
+	}
+	g.parkBall()
 	return g
 }
 
-// serve puts the ball on the paddle and sends it up, slightly off vertical
-// so it doesn't just bounce in place.
-func (g *Game) serve() {
-	g.Ball = Ball{
-		Pos: Vec{g.Paddle.X, PaddleTop - ballHalf},
-		Vel: paddleBounce(0.3, BallSpeed),
-	}
+// BallSpeed returns the launch speed for the current level.
+func (g *Game) BallSpeed() float64 {
+	return BallSpeed * (1 + min(float64(g.Level-1)*LevelSpeedup, MaxSpeedup))
+}
+
+func (g *Game) setState(s State) {
+	g.State, g.since = s, 0
+}
+
+// parkBall rests the ball on the paddle at the serving spot.
+func (g *Game) parkBall() {
+	g.Ball = Ball{Pos: Vec{g.Paddle.X + serveOffset*g.Paddle.W/2, PaddleTop - ballHalf}}
 }
 
 // Update advances the simulation by one fixed step of dt seconds.
 func (g *Game) Update(dt float64, in Input) {
+	if in.Pause {
+		switch g.State {
+		case StatePaused:
+			g.State = g.resume
+		case StateServe, StatePlaying:
+			g.resume, g.State = g.State, StatePaused
+		}
+	}
+	if g.State == StatePaused {
+		return
+	}
+
 	g.Ticks++
 	g.Time += dt
+	g.since += dt
 
 	if in.HasMouse {
 		g.Paddle.moveTo(in.PaddleX)
@@ -100,14 +181,44 @@ func (g *Game) Update(dt float64, in Input) {
 		g.Paddle.moveTo(g.Paddle.X + clamp(in.Move, -1, 1)*PaddleKeySpeed*dt)
 	}
 
-	g.moveBall(&g.Ball, dt)
+	switch g.State {
+	case StateServe:
+		g.parkBall()
+		if in.Launch {
+			g.Ball.Vel = paddleBounce(serveOffset, g.BallSpeed())
+			g.setState(StatePlaying)
+		}
 
-	if g.Ball.Pos.Y-ballHalf > Height {
-		g.serve()
-	}
-	if g.Bricks.Remaining() == 0 {
-		g.Bricks = demoGrid()
-		g.serve()
+	case StatePlaying:
+		g.moveBall(&g.Ball, dt)
+		switch {
+		case g.Bricks.Remaining() == 0:
+			g.setState(StateLevelClear)
+		case g.Ball.Pos.Y-ballHalf > Height:
+			g.Lives--
+			if g.Lives <= 0 {
+				g.setState(StateGameOver)
+			} else {
+				g.parkBall()
+				g.setState(StateServe)
+			}
+		}
+
+	case StateLevelClear:
+		if in.Launch && g.since >= promptDelay {
+			g.Level++
+			g.Bricks = demoGrid()
+			g.parkBall()
+			g.setState(StateServe)
+		}
+
+	case StateGameOver:
+		if in.Launch && g.since >= promptDelay {
+			paddle := g.Paddle
+			*g = *New()
+			g.Paddle = paddle // don't yank it away from the mouse
+			g.parkBall()
+		}
 	}
 }
 
@@ -142,6 +253,7 @@ func (g *Game) moveBall(b *Ball, dt float64) {
 		case hit.brick:
 			b.Vel = reflect(b.Vel, hit.n)
 			g.Bricks[hit.r][hit.c].Alive = false
+			g.Score += BrickScore
 		default:
 			b.Vel = reflect(b.Vel, hit.n)
 		}

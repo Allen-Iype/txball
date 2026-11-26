@@ -101,6 +101,8 @@ func loop(ctx context.Context, s tcell.Screen, opts Options) error {
 
 		keyDir   float64
 		keyUntil time.Time
+		// mouseDown tracks the primary button so a held click launches once.
+		mouseDown bool
 	)
 
 	ticker := time.NewTicker(time.Second / renderHz)
@@ -120,10 +122,23 @@ func loop(ctx context.Context, s tcell.Screen, opts Options) error {
 				if dir := steer(ev); dir != 0 {
 					keyDir, keyUntil = dir, time.Now().Add(keyHold)
 				}
+				if ev.Key() == tcell.KeyRune {
+					switch ev.Rune() {
+					case ' ':
+						in.Launch = true
+					case 'p', 'P':
+						in.Pause = true
+					}
+				}
 			case *tcell.EventMouse:
 				col, _ := ev.Position()
 				sw, sh := s.Size()
 				in.PaddleX, in.HasMouse = render.WorldX(sw, sh, col), true
+				down := ev.Buttons()&tcell.ButtonPrimary != 0
+				if down && !mouseDown {
+					in.Launch = true
+				}
+				mouseDown = down
 			case *tcell.EventResize:
 				// The playfield re-centres, so drop what was drawn at
 				// the old origin.
@@ -147,9 +162,10 @@ func loop(ctx context.Context, s tcell.Screen, opts Options) error {
 				g.Update(dt, in)
 				acc -= dt
 				upds++
-				// A mouse position is a one-shot jump; once applied, the
-				// keyboard is free to move the paddle away from it.
-				in.HasMouse = false
+				// These are one-shot: a mouse position is a jump, after
+				// which the keyboard is free to move the paddle away, and
+				// button presses are edges.
+				in.HasMouse, in.Launch, in.Pause = false, false, false
 			}
 
 			frames++

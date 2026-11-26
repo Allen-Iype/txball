@@ -4,6 +4,23 @@ import "testing"
 
 const testDT = 1.0 / 120
 
+// playing returns a game with the ball already in flight.
+func playing() *Game {
+	g := New()
+	g.Update(testDT, Input{Launch: true})
+	return g
+}
+
+// run feeds the same input for n steps.
+func run(g *Game, n int, in Input) {
+	for range n {
+		g.Update(testDT, in)
+	}
+}
+
+// promptSteps is enough updates to get past promptDelay.
+const promptSteps = int(promptDelay/testDT) + 2
+
 func TestPaddleInput(t *testing.T) {
 	tests := []struct {
 		name  string
@@ -58,7 +75,7 @@ func TestBallPaddleCollision(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			g := New()
+			g := playing()
 			g.Ball = tt.ball
 			g.Update(testDT, tt.in)
 			travel := BallSpeed * testDT
@@ -85,33 +102,25 @@ func TestBallPaddleCollision(t *testing.T) {
 	}
 }
 
-func TestBallLostIsReserved(t *testing.T) {
-	g := New()
-	g.Paddle.X = 20
-	g.Ball = Ball{Pos: Vec{60, Height + ballHalf}, Vel: Vec{0, BallSpeed}}
-	g.Update(testDT, Input{})
-
-	if !near(g.Ball.Pos.X, 20) || g.Ball.Pos.Y > PaddleTop {
-		t.Errorf("ball = %+v, want re-served on the paddle at x=20", g.Ball.Pos)
-	}
-	if g.Ball.Vel.Y >= 0 {
-		t.Errorf("ball Vel.Y = %v, want upward", g.Ball.Vel.Y)
-	}
-}
-
 // A long unattended run must keep the ball inside the walls at constant speed.
 func TestBallStaysInBounds(t *testing.T) {
-	g := New()
+	g := playing()
 	for i := range 120 * 60 {
 		// Keep the paddle under the ball so it stays in play.
-		g.Update(testDT, Input{PaddleX: g.Ball.Pos.X + 2, HasMouse: true})
+		g.Update(testDT, Input{PaddleX: g.Ball.Pos.X + 2, HasMouse: true, Launch: true})
+		if g.State != StatePlaying {
+			continue // between levels
+		}
 		b := g.Ball
 		if b.Pos.X < ballHalf-eps || b.Pos.X > Width-ballHalf+eps || b.Pos.Y < ballHalf-eps || b.Pos.Y > PaddleTop {
 			t.Fatalf("tick %d: ball out of bounds at %+v", i, b.Pos)
 		}
-		if !near(b.Vel.Len(), BallSpeed) {
-			t.Fatalf("tick %d: speed drifted to %v", i, b.Vel.Len())
+		if !near(b.Vel.Len(), g.BallSpeed()) {
+			t.Fatalf("tick %d: speed drifted to %v, want %v", i, b.Vel.Len(), g.BallSpeed())
 		}
+	}
+	if g.Lives != StartLives {
+		t.Errorf("lives = %d, want %d: a tracked ball should never be lost", g.Lives, StartLives)
 	}
 }
 
@@ -299,10 +308,17 @@ func TestBallBrickCollision(t *testing.T) {
 // outside the walls.
 func TestNoTunnellingSoak(t *testing.T) {
 	for _, speed := range []float64{40, 400, 4000, 40000} {
-		g := New()
+		g := playing()
 		g.Ball.Vel = paddleBounce(0.37, speed)
 		for i := range 5000 {
 			g.Update(testDT, Input{PaddleX: g.Ball.Pos.X + 1, HasMouse: true})
+			if g.State != StatePlaying {
+				// Cleared the level: rebuild and keep hammering.
+				g.Bricks = demoGrid()
+				g.State = StatePlaying
+				g.Ball = Ball{Pos: Vec{40, 38}, Vel: paddleBounce(0.37, speed)}
+				continue
+			}
 			p := g.Ball.Pos
 			if p.X < ballHalf-eps || p.X > Width-ballHalf+eps || p.Y < ballHalf-eps {
 				t.Fatalf("speed %v tick %d: ball outside walls at %+v", speed, i, p)

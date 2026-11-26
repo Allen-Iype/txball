@@ -162,3 +162,70 @@ func TestLoopKeyboardMovesPaddle(t *testing.T) {
 		})
 	}
 }
+
+// screenText returns the simulated screen as one string per row.
+func screenText(s tcell.SimulationScreen) []string {
+	cells, w, h := s.GetContents()
+	out := make([]string, h)
+	for y := range h {
+		var b strings.Builder
+		for _, c := range cells[y*w:][:w] {
+			if len(c.Runes) > 0 {
+				b.WriteRune(c.Runes[0])
+			} else {
+				b.WriteByte(' ')
+			}
+		}
+		out[y] = b.String()
+	}
+	return out
+}
+
+func TestLoopGameFlowKeys(t *testing.T) {
+	space := func(s tcell.SimulationScreen) { s.InjectKey(tcell.KeyRune, ' ', tcell.ModNone) }
+	click := func(s tcell.SimulationScreen) {
+		s.InjectMouse(40, 10, tcell.ButtonPrimary, tcell.ModNone)
+		s.InjectMouse(40, 10, tcell.ButtonNone, tcell.ModNone)
+	}
+	pause := func(s tcell.SimulationScreen) { s.InjectKey(tcell.KeyRune, 'p', tcell.ModNone) }
+
+	tests := []struct {
+		name    string
+		steps   []func(tcell.SimulationScreen)
+		want    string // text expected on the overlay row; "" for none
+		wantNot string
+	}{
+		{"starts waiting to launch", nil, "click or space to launch", ""},
+		{"space launches", []func(tcell.SimulationScreen){space}, "", "launch"},
+		{"click launches", []func(tcell.SimulationScreen){click}, "", "launch"},
+		{"p pauses", []func(tcell.SimulationScreen){space, pause}, "PAUSED", ""},
+		{"p again resumes", []func(tcell.SimulationScreen){space, pause, pause}, "", "PAUSED"},
+		{"pause while serving", []func(tcell.SimulationScreen){pause}, "PAUSED", ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			s := newSim(t)
+			ctx, cancel := context.WithCancel(context.Background())
+			errc := runLoop(s, ctx)
+			for _, step := range tt.steps {
+				step(s)
+				time.Sleep(80 * time.Millisecond)
+			}
+			time.Sleep(80 * time.Millisecond)
+			cancel()
+			<-errc
+
+			_, oy := render.Origin(s.Size())
+			row := screenText(s)[oy+17]
+			if tt.want != "" && !strings.Contains(row, tt.want) {
+				t.Errorf("overlay row = %q, want it to contain %q", row, tt.want)
+			}
+			if tt.wantNot != "" && strings.Contains(row, tt.wantNot) {
+				t.Errorf("overlay row = %q, want no %q", row, tt.wantNot)
+			}
+			if testing.Verbose() && tt.name == "p pauses" {
+				t.Log("\n" + strings.Join(screenText(s), "\n"))
+			}
+		})
+	}
+}
