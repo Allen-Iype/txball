@@ -182,6 +182,7 @@ func (g *Game) stepPowerups(dt float64) {
 			pu.Pos.Y+PowerH/2 > PaddleTop && pu.Pos.Y-PowerH/2 < PaddleTop+PaddleHeight
 		switch {
 		case caught:
+			g.Events |= EventPowerup
 			g.applyPower(pu.Kind)
 		case pu.Pos.Y-PowerH/2 < Height:
 			kept = append(kept, pu)

@@ -132,10 +132,16 @@ func (r *Renderer) Draw(s tcell.Screen, g *game.Game, st Stats) {
 	}
 	level := fmt.Sprintf("LEVEL %d", g.Level)
 	hud.put((cols-len(level))/2, tcell.StyleDefault.Foreground(colText), level)
+	// Right-aligned: lives, score, then the high score.
+	high := fmt.Sprintf("HI %06d", g.High)
 	score := fmt.Sprintf("%06d", g.Score)
-	hud.put(cols-len(score), tcell.StyleDefault.Foreground(colText).Bold(true), score)
 	lives := strings.Repeat("♥", max(g.Lives, 0))
-	hud.put(cols-len(score)-2-utf8.RuneCountInString(lives), tcell.StyleDefault.Foreground(colLife), lives)
+	x = cols - len(high)
+	hud.put(x, tcell.StyleDefault.Foreground(colDim), high)
+	x -= 2 + len(score)
+	hud.put(x, tcell.StyleDefault.Foreground(colText).Bold(true), score)
+	x -= 2 + utf8.RuneCountInString(lives)
+	hud.put(x, tcell.StyleDefault.Foreground(colLife), lives)
 	hud.draw(s, ox, oy-2)
 }
 
@@ -219,6 +225,37 @@ func (r *Renderer) overlay(g *game.Game) {
 		x = put(x, base.Foreground(colTitle).Bold(true), title+"  ")
 	}
 	put(x, base.Foreground(colText), hint)
+}
+
+// Fits reports whether a terminal of the given size can show the game.
+func Fits(screenW, screenH int) bool {
+	return screenW >= MinCols && screenH >= MinRows
+}
+
+// DrawTooSmall paints the notice shown in place of the game when the
+// terminal is smaller than MinCols x MinRows. Like Draw, it relies on the
+// caller clearing the screen when the size changes.
+func DrawTooSmall(s tcell.Screen) {
+	w, h := s.Size()
+	lines := []struct {
+		text string
+		st   tcell.Style
+	}{
+		{"TX-Ball", tcell.StyleDefault.Foreground(colTitle).Bold(true)},
+		{"", tcell.StyleDefault},
+		{"Terminal too small", tcell.StyleDefault.Foreground(colText).Bold(true)},
+		{fmt.Sprintf("need %d×%d, have %d×%d", MinCols, MinRows, w, h), tcell.StyleDefault.Foreground(colText)},
+		{"", tcell.StyleDefault},
+		{"enlarge the window to play · q quit", tcell.StyleDefault.Foreground(colDim)},
+	}
+	y := max((h-len(lines))/2, 0)
+	for i, l := range lines {
+		x := max((w-utf8.RuneCountInString(l.text))/2, 0)
+		for _, ch := range l.text {
+			s.SetContent(x, y+i, ch, nil, l.st) // tcell ignores cells off screen
+			x++
+		}
+	}
 }
 
 // Origin returns the screen cell of the playfield's top-left corner for a

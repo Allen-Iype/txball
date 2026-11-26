@@ -1,6 +1,7 @@
 package render
 
 import (
+	"strconv"
 	"strings"
 	"testing"
 
@@ -102,6 +103,11 @@ func TestHUD(t *testing.T) {
 	g.Timers[game.PowerLong] = 19.01
 	hud := draw(t, g)[0]
 
+	g.High = 45670
+	hud = draw(t, g)[0]
+	if !strings.HasSuffix(hud, "♥♥  001230  HI 045670 ") { // the last column is the border's
+		t.Errorf("HUD %q does not end with lives, score and high score", hud)
+	}
 	for _, want := range []string{"TX-Ball", "LEVEL 7", "♥♥  001230", "L20", "F8"} {
 		if !strings.Contains(hud, want) {
 			t.Errorf("HUD %q is missing %q", hud, want)
@@ -150,3 +156,54 @@ func TestOverlays(t *testing.T) {
 		})
 	}
 }
+
+func TestFits(t *testing.T) {
+	tests := []struct {
+		w, h int
+		want bool
+	}{
+		{MinCols, MinRows, true},
+		{200, 60, true},
+		{MinCols - 1, MinRows, false},
+		{MinCols, MinRows - 1, false},
+		{0, 0, false},
+	}
+	for _, tt := range tests {
+		if got := Fits(tt.w, tt.h); got != tt.want {
+			t.Errorf("Fits(%d, %d) = %v, want %v", tt.w, tt.h, got, tt.want)
+		}
+	}
+}
+
+func TestDrawTooSmall(t *testing.T) {
+	for _, size := range [][2]int{{60, 20}, {40, 8}, {12, 3}, {1, 1}} {
+		s := tcell.NewSimulationScreen("")
+		if err := s.Init(); err != nil {
+			t.Fatal(err)
+		}
+		s.SetSize(size[0], size[1])
+		DrawTooSmall(s) // must not panic however small
+		s.Show()
+
+		cells, w, h := s.GetContents()
+		var all strings.Builder
+		for y := range h {
+			for _, c := range cells[y*w:][:w] {
+				if len(c.Runes) > 0 {
+					all.WriteRune(c.Runes[0])
+				}
+			}
+			all.WriteByte('\n')
+		}
+		s.Fini()
+		if size[0] >= 40 && size[1] >= 8 {
+			for _, want := range []string{"Terminal too small", "need 82×25, have " + itoa(size[0]) + "×" + itoa(size[1]), "q quit"} {
+				if !strings.Contains(all.String(), want) {
+					t.Errorf("%dx%d: notice is missing %q:\n%s", size[0], size[1], want, all.String())
+				}
+			}
+		}
+	}
+}
+
+func itoa(n int) string { return strconv.Itoa(n) }

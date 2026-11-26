@@ -79,6 +79,19 @@ func (s State) String() string {
 	return "State(?)"
 }
 
+// Events is a set of things that happened, for the front end to react to
+// (it rings the bell on some of them). The game only ever adds to the set;
+// whoever reads it clears it.
+type Events uint8
+
+const (
+	EventBrick   Events = 1 << iota // a ball struck a brick
+	EventPaddle                     // a ball landed on the paddle
+	EventPowerup                    // a capsule was caught
+	EventLifeLost
+	EventLevelClear
+)
+
 // Input is the player's intent for a single update step.
 type Input struct {
 	// PaddleX is the world X the paddle centre should jump to. It is only
@@ -127,6 +140,12 @@ type Game struct {
 	Level int // 1-based
 	Lives int
 	Score int
+	// High is the best score seen, including the current one. It carries
+	// over from game to game; the caller seeds and persists it.
+	High int
+	// Events accumulates what has happened since the caller last cleared
+	// it.
+	Events Events
 
 	Paddle Paddle
 	// Balls are the balls in play. While serving there is exactly one,
@@ -223,14 +242,22 @@ func (g *Game) launch() {
 	}
 }
 
+// Pause freezes play. It does nothing on the level-clear and game-over
+// screens, which are already waiting for the player, or when already
+// paused; the player resumes with Input.Pause.
+func (g *Game) Pause() {
+	if g.State == StateServe || g.State == StatePlaying {
+		g.resume, g.State = g.State, StatePaused
+	}
+}
+
 // Update advances the simulation by one fixed step of dt seconds.
 func (g *Game) Update(dt float64, in Input) {
 	if in.Pause {
-		switch g.State {
-		case StatePaused:
+		if g.State == StatePaused {
 			g.State = g.resume
-		case StateServe, StatePlaying:
-			g.resume, g.State = g.State, StatePaused
+		} else {
+			g.Pause()
 		}
 	}
 	if g.State == StatePaused {
@@ -268,9 +295,11 @@ func (g *Game) Update(dt float64, in Input) {
 		g.stepPowerups(dt)
 		switch {
 		case g.Bricks.Remaining() == 0:
+			g.Events |= EventLevelClear
 			g.clearRound()
 			g.setState(StateLevelClear)
 		case len(g.Balls) == 0:
+			g.Events |= EventLifeLost
 			g.Lives--
 			if g.Lives <= 0 {
 				g.clearRound()
@@ -287,12 +316,15 @@ func (g *Game) Update(dt float64, in Input) {
 
 	case StateGameOver:
 		if in.Launch && g.since >= promptDelay {
-			paddle, chance := g.Paddle, g.DropChance
-			*g = *New(g.levels, g.rng)
-			g.Paddle, g.DropChance = paddle, chance // don't yank it away from the mouse
+			// A new game keeps the high score, the settings and where
+			// the paddle is (so it isn't yanked away from the mouse).
+			old := *g
+			*g = *New(old.levels, old.rng)
+			g.Paddle, g.DropChance, g.High, g.Events = old.Paddle, old.DropChance, old.High, old.Events
 			g.serve()
 		}
 	}
+	g.High = max(g.High, g.Score)
 }
 
 // stepBalls moves every ball one step and drops the ones that fall out of
@@ -346,6 +378,7 @@ func (g *Game) moveBall(b *Ball, dt float64) {
 		switch {
 		case hit.paddle:
 			offset := clamp((b.Pos.X-g.Paddle.X)/(g.Paddle.W/2), -1, 1)
+			g.Events |= EventPaddle
 			if g.Active(PowerSticky) {
 				b.Stuck, b.Offset, b.Vel = true, offset, Vec{}
 				return
@@ -353,6 +386,7 @@ func (g *Game) moveBall(b *Ball, dt float64) {
 			b.Vel = paddleBounce(offset, b.Vel.Len())
 		case hit.brick:
 			br := &g.Bricks[hit.r][hit.c]
+			g.Events |= EventBrick
 			if g.Active(PowerFire) && br.Breakable() {
 				// A fireball destroys the brick outright and carries
 				// straight on through where it stood.

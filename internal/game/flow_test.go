@@ -263,3 +263,147 @@ func TestScoreAndSpeed(t *testing.T) {
 		}
 	}
 }
+
+func TestHighScore(t *testing.T) {
+	score := func(g *Game) { // break one brick
+		g.Bricks[3][5] = Brick{Kind: BrickNormal, Hits: 1}
+		g.Balls[0] = Ball{Pos: Vec{22, 12.6}, Vel: Vec{0, -BallSpeed}}
+		g.Update(testDT, Input{})
+	}
+	gameOver := func(g *Game) {
+		g.Lives = 1
+		lose(g)
+		run(g, promptSteps, Input{})
+		g.Update(testDT, Input{Launch: true}) // new game
+		g.Update(testDT, Input{Launch: true}) // serve
+	}
+
+	g := playing()
+	g.Bricks = bricksAt([2]int{19, 13})
+	g.High = 25
+
+	score(g)
+	score(g)
+	if g.Score != 20 || g.High != 25 {
+		t.Fatalf("score=%d high=%d, want 20 and an unbeaten 25", g.Score, g.High)
+	}
+	score(g)
+	if g.Score != 30 || g.High != 30 {
+		t.Fatalf("score=%d high=%d, want the high score to follow at 30", g.Score, g.High)
+	}
+
+	gameOver(g)
+	if g.Score != 0 || g.High != 30 {
+		t.Fatalf("after a new game: score=%d high=%d, want 0 and 30", g.Score, g.High)
+	}
+	g.Bricks = bricksAt([2]int{19, 13})
+	score(g)
+	if g.High != 30 {
+		t.Errorf("high = %d, want 30 to stand against a score of %d", g.High, g.Score)
+	}
+}
+
+func TestEvents(t *testing.T) {
+	above := PaddleTop - ballHalf - 0.1
+	tests := []struct {
+		name string
+		prep func(g *Game)
+		want Events
+	}{
+		{"nothing happening", func(g *Game) {}, 0},
+		{"wall bounce is silent", func(g *Game) {
+			g.Balls[0] = Ball{Pos: Vec{0.6, 30}, Vel: Vec{-BallSpeed, 0.001}}
+		}, 0},
+		{"brick broken", func(g *Game) {
+			g.Bricks[3][5] = Brick{Kind: BrickNormal, Hits: 1}
+			g.Balls[0] = Ball{Pos: Vec{22, 12.6}, Vel: Vec{0, -BallSpeed}}
+		}, EventBrick},
+		{"solid brick struck", func(g *Game) {
+			g.Bricks[3][5] = Brick{Kind: BrickSolid}
+			g.Balls[0] = Ball{Pos: Vec{22, 12.6}, Vel: Vec{0, -BallSpeed}}
+		}, EventBrick},
+		{"paddle bounce", func(g *Game) {
+			g.Balls[0] = Ball{Pos: Vec{40, above}, Vel: Vec{0, BallSpeed}}
+		}, EventPaddle},
+		{"sticky catch", func(g *Game) {
+			g.applyPower(PowerSticky)
+			g.Balls[0] = Ball{Pos: Vec{40, above}, Vel: Vec{0, BallSpeed}}
+		}, EventPaddle},
+		{"capsule caught", func(g *Game) {
+			g.Powerups = []Powerup{{PowerSlow, Vec{40, PaddleTop}}}
+		}, EventPowerup},
+		{"capsule missed", func(g *Game) {
+			g.Powerups = []Powerup{{PowerSlow, Vec{5, Height + 0.99}}}
+		}, 0},
+		{"life lost", func(g *Game) {
+			g.Balls[0] = Ball{Pos: Vec{40, Height + 1}, Vel: Vec{0, BallSpeed}}
+		}, EventLifeLost},
+		{"last brick", func(g *Game) {
+			g.Bricks = bricksAt([2]int{5, 3})
+			g.Balls[0] = Ball{Pos: Vec{22, 12.6}, Vel: Vec{0, -BallSpeed}}
+		}, EventBrick | EventLevelClear},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			g := playing()
+			g.Bricks = bricksAt([2]int{19, 13})
+			g.Balls[0] = Ball{Pos: Vec{60, 30}, Vel: Vec{0, -BallSpeed}}
+			tt.prep(g)
+			g.Events = 0
+			g.Update(testDT, Input{})
+			if g.Events != tt.want {
+				t.Errorf("events = %05b, want %05b", g.Events, tt.want)
+			}
+		})
+	}
+
+	t.Run("events accumulate until cleared", func(t *testing.T) {
+		g := playing()
+		g.Events = EventPowerup
+		g.Balls[0] = Ball{Pos: Vec{40, above}, Vel: Vec{0, BallSpeed}}
+		g.Update(testDT, Input{})
+		if g.Events != EventPowerup|EventPaddle {
+			t.Errorf("events = %05b, want powerup and paddle", g.Events)
+		}
+	})
+}
+
+func TestPauseMethod(t *testing.T) {
+	tests := []struct {
+		name string
+		prep func(g *Game)
+		want State
+	}{
+		{"from serve", func(g *Game) {}, StatePaused},
+		{"from play", func(g *Game) { g.Update(testDT, Input{Launch: true}) }, StatePaused},
+		{"already paused stays paused", func(g *Game) { g.Pause() }, StatePaused},
+		{"level-clear screen is left alone", func(g *Game) {
+			g.Update(testDT, Input{Launch: true})
+			clearLevel(g)
+		}, StateLevelClear},
+		{"game-over screen is left alone", func(g *Game) {
+			g.Lives = 1
+			g.Update(testDT, Input{Launch: true})
+			lose(g)
+		}, StateGameOver},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			g := newGame()
+			tt.prep(g)
+			g.Pause()
+			if g.State != tt.want {
+				t.Errorf("state = %v, want %v", g.State, tt.want)
+			}
+		})
+	}
+
+	// Pausing twice must still resume to where play was, not to "paused".
+	g := playing()
+	g.Pause()
+	g.Pause()
+	g.Update(testDT, Input{Pause: true})
+	if g.State != StatePlaying {
+		t.Errorf("after pause, pause, resume: state = %v, want Playing", g.State)
+	}
+}

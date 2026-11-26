@@ -2,6 +2,8 @@ package app
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -235,4 +237,182 @@ func TestLoopGameFlowKeys(t *testing.T) {
 			}
 		})
 	}
+}
+
+// start runs the loop on g and returns a function that stops it and
+// reports its error.
+func start(t *testing.T, s tcell.Screen, g *game.Game, opts Options) (stop func() error) {
+	t.Helper()
+	ctx, cancel := context.WithCancel(context.Background())
+	errc := make(chan error, 1)
+	go func() { errc <- loop(ctx, s, g, opts) }()
+	return func() error {
+		cancel()
+		select {
+		case err := <-errc:
+			return err
+		case <-time.After(2 * time.Second):
+			t.Fatal("loop did not stop")
+			return nil
+		}
+	}
+}
+
+func builtinGame(t *testing.T) *game.Game {
+	t.Helper()
+	grids, err := level.LoadAll(levels.FS)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return game.New(grids, nil)
+}
+
+func TestLoopResizeRecentres(t *testing.T) {
+	s := newSim(t)
+	stop := start(t, s, builtinGame(t), Options{})
+	time.Sleep(100 * time.Millisecond)
+
+	s.SetSize(render.MinCols+20, render.MinRows+10)
+	time.Sleep(150 * time.Millisecond)
+	if err := stop(); err != nil {
+		t.Fatal(err)
+	}
+
+	rows := screenText(s)
+	// Centred: 10 spare columns and 5 spare rows on each side.
+	if got := []rune(rows[6]); got[10] != '┌' || got[10+render.MinCols-1] != '┐' {
+		t.Errorf("top border not at its centred position: %q", rows[6])
+	}
+	if !strings.Contains(rows[5], "TX-Ball") {
+		t.Errorf("HUD not on the row above the border: %q", rows[5])
+	}
+	for y, row := range rows[:5] {
+		if strings.TrimSpace(row) != "" {
+			t.Errorf("stale content left on row %d after resize: %q", y, row)
+		}
+	}
+}
+
+func TestLoopTooSmallPausesAndRecovers(t *testing.T) {
+	s := newSim(t)
+	g := builtinGame(t)
+	stop := start(t, s, g, Options{})
+	s.InjectKey(tcell.KeyRune, ' ', tcell.ModNone) // launch
+	time.Sleep(120 * time.Millisecond)
+
+	s.SetSize(60, 20)
+	time.Sleep(150 * time.Millisecond)
+	small := strings.Join(screenText(s), "\n")
+	for _, want := range []string{"Terminal too small", "need 82×25, have 60×20"} {
+		if !strings.Contains(small, want) {
+			t.Errorf("too-small screen is missing %q:\n%s", want, small)
+		}
+	}
+	if strings.ContainsRune(small, '▀') {
+		t.Error("playfield still drawn on a too-small screen")
+	}
+
+	s.SetSize(render.MinCols, render.MinRows)
+	time.Sleep(150 * time.Millisecond)
+	if err := stop(); err != nil {
+		t.Fatal(err)
+	}
+	if g.State != game.StatePaused {
+		t.Errorf("state after shrinking and regrowing = %v, want Paused", g.State)
+	}
+	big := strings.Join(screenText(s), "\n")
+	if !strings.Contains(big, "PAUSED") || strings.Contains(big, "too small") {
+		t.Errorf("after regrowing, want the game back with PAUSED showing:\n%s", big)
+	}
+}
+
+func TestLoopQuitWorksWhenTooSmall(t *testing.T) {
+	s := newSim(t)
+	s.SetSize(30, 10)
+	stop := start(t, s, builtinGame(t), Options{})
+	time.Sleep(80 * time.Millisecond)
+	s.InjectKey(tcell.KeyRune, 'q', tcell.ModNone)
+	time.Sleep(80 * time.Millisecond)
+	if err := stop(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestLoopSavesHighScore(t *testing.T) {
+	readScore := func(t *testing.T, path string) string {
+		t.Helper()
+		data, err := os.ReadFile(path)
+		if os.IsNotExist(err) {
+			return ""
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		return string(data)
+	}
+
+	tests := []struct {
+		name  string
+		high  int // loaded high score
+		score int // score reached this session
+		want  string
+	}{
+		{"new record is saved on quit", 100, 250, "250\n"},
+		{"first ever score is saved", 0, 30, "30\n"},
+		{"no record, nothing written", 100, 40, ""},
+		{"no points, nothing written", 0, 0, ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "cfg", "highscore")
+			g := builtinGame(t)
+			g.High, g.Score = tt.high, tt.score
+			s := newSim(t)
+			stop := start(t, s, g, Options{ScoreFile: path})
+			time.Sleep(100 * time.Millisecond)
+			if err := stop(); err != nil {
+				t.Fatal(err)
+			}
+			if got := readScore(t, path); got != tt.want {
+				t.Errorf("score file = %q, want %q", got, tt.want)
+			}
+		})
+	}
+
+	t.Run("saved at game over without quitting", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "highscore")
+		g := builtinGame(t)
+		g.Score, g.Lives = 70, 1
+		s := newSim(t)
+		stop := start(t, s, g, Options{ScoreFile: path})
+		defer stop()
+
+		s.InjectMouse(1, 5, tcell.ButtonNone, tcell.ModNone) // park the paddle at the left wall
+		s.InjectKey(tcell.KeyRune, ' ', tcell.ModNone)       // launch; the ball will come down elsewhere
+		deadline := time.Now().Add(10 * time.Second)
+		for readScore(t, path) == "" {
+			if time.Now().After(deadline) {
+				t.Fatal("high score not written after the game ended")
+			}
+			time.Sleep(50 * time.Millisecond)
+		}
+		if got := readScore(t, path); !strings.HasSuffix(got, "0\n") || got == "0\n" {
+			t.Errorf("score file = %q, want the final score", got)
+		}
+	})
+
+	t.Run("unwritable location is reported", func(t *testing.T) {
+		blocker := filepath.Join(t.TempDir(), "blocker")
+		if err := os.WriteFile(blocker, nil, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		g := builtinGame(t)
+		g.Score = 10
+		s := newSim(t)
+		stop := start(t, s, g, Options{ScoreFile: filepath.Join(blocker, "highscore")})
+		time.Sleep(80 * time.Millisecond)
+		if err := stop(); err == nil || !strings.Contains(err.Error(), "save high score") {
+			t.Errorf("err = %v, want a save failure", err)
+		}
+	})
 }
