@@ -1,5 +1,7 @@
 # TX-Ball
 
+[![CI](https://github.com/Allen-Iype/txball/actions/workflows/ci.yml/badge.svg)](https://github.com/Allen-Iype/txball/actions/workflows/ci.yml)
+
 A brick-breaker for the terminal, written in Go with [tcell](https://github.com/gdamore/tcell).
 Mouse-controlled paddle, half-block graphics, levels in plain text files and seven power-ups.
 
