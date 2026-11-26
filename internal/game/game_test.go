@@ -4,9 +4,27 @@ import "testing"
 
 const testDT = 1.0 / 120
 
+// newGame returns a game with a single demo level.
+func newGame() *Game { return New([]Grid{demoGrid()}) }
+
+// demoGrid is the layout most tests play on: seven coloured rows with a channel up the middle and down each side, so
+// the ball can get above the bricks and at their sides.
+func demoGrid() Grid {
+	var g Grid
+	for r := 1; r <= 7; r++ {
+		for c := 1; c < BrickCols-1; c++ {
+			if c == BrickCols/2-1 || c == BrickCols/2 {
+				continue
+			}
+			g[r][c] = Brick{Kind: BrickNormal, Color: uint8(r - 1), Hits: 1}
+		}
+	}
+	return g
+}
+
 // playing returns a game with the ball already in flight.
 func playing() *Game {
-	g := New()
+	g := newGame()
 	g.Update(testDT, Input{Launch: true})
 	return g
 }
@@ -39,7 +57,7 @@ func TestPaddleInput(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			g := New()
+			g := newGame()
 			g.Paddle.X = tt.start
 			g.Ball = Ball{Pos: Vec{40, 10}} // parked out of the way
 			g.Update(testDT, tt.in)
@@ -128,7 +146,7 @@ func TestBallStaysInBounds(t *testing.T) {
 func bricksAt(cells ...[2]int) Grid {
 	var g Grid
 	for _, c := range cells {
-		g[c[1]][c[0]] = Brick{Alive: true}
+		g[c[1]][c[0]] = Brick{Kind: BrickNormal, Hits: 1}
 	}
 	return g
 }
@@ -277,7 +295,7 @@ func TestBallBrickCollision(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			g := New()
+			g := newGame()
 			g.Paddle.X = 70 // out of the way
 			g.Bricks = bricksAt(append(tt.bricks, cell{19, 13})...)
 			g.Ball = tt.ball
@@ -327,7 +345,7 @@ func TestNoTunnellingSoak(t *testing.T) {
 				for c := range g.Bricks[r] {
 					b := BrickRect(c, r)
 					const in = ballHalf - 1e-6
-					if g.Bricks[r][c].Alive && p.X > b.Min.X-in && p.X < b.Max.X+in && p.Y > b.Min.Y-in && p.Y < b.Max.Y+in {
+					if g.Bricks[r][c].Alive() && p.X > b.Min.X-in && p.X < b.Max.X+in && p.Y > b.Min.Y-in && p.Y < b.Max.Y+in {
 						t.Fatalf("speed %v tick %d: ball at %+v is inside brick (%d,%d)", speed, i, p, c, r)
 					}
 				}

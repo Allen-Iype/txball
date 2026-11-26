@@ -124,22 +124,37 @@ type Game struct {
 	Ball   Ball
 	Bricks Grid
 
+	// levels are the layouts, played in order and then repeated.
+	levels []Grid
 	// since is how long the game has been in State.
 	since float64
 	// resume is the state to return to from StatePaused.
 	resume State
 }
 
-// New returns a game at the start of level 1, waiting to serve.
-func New() *Game {
+// New returns a game at the start of level 1, waiting to serve. The layouts
+// are played in order, wrapping around after the last; there must be at
+// least one.
+func New(levels []Grid) *Game {
+	if len(levels) == 0 {
+		panic("game: New needs at least one level")
+	}
 	g := &Game{
-		Level:  1,
 		Lives:  StartLives,
 		Paddle: Paddle{X: Width / 2, W: PaddleWidth},
-		Bricks: demoGrid(),
+		levels: levels,
 	}
-	g.parkBall()
+	g.JumpTo(1)
 	return g
+}
+
+// JumpTo sets up the given 1-based level, ready to serve. Score and lives
+// are kept.
+func (g *Game) JumpTo(level int) {
+	g.Level = max(level, 1)
+	g.Bricks = g.levels[(g.Level-1)%len(g.levels)]
+	g.parkBall()
+	g.setState(StateServe)
 }
 
 // BallSpeed returns the launch speed for the current level.
@@ -206,16 +221,13 @@ func (g *Game) Update(dt float64, in Input) {
 
 	case StateLevelClear:
 		if in.Launch && g.since >= promptDelay {
-			g.Level++
-			g.Bricks = demoGrid()
-			g.parkBall()
-			g.setState(StateServe)
+			g.JumpTo(g.Level + 1)
 		}
 
 	case StateGameOver:
 		if in.Launch && g.since >= promptDelay {
 			paddle := g.Paddle
-			*g = *New()
+			*g = *New(g.levels)
 			g.Paddle = paddle // don't yank it away from the mouse
 			g.parkBall()
 		}
@@ -252,8 +264,9 @@ func (g *Game) moveBall(b *Ball, dt float64) {
 			b.Vel = paddleBounce((b.Pos.X-g.Paddle.X)/(g.Paddle.W/2), b.Vel.Len())
 		case hit.brick:
 			b.Vel = reflect(b.Vel, hit.n)
-			g.Bricks[hit.r][hit.c].Alive = false
-			g.Score += BrickScore
+			if g.Bricks[hit.r][hit.c].hit() {
+				g.Score += BrickScore
+			}
 		default:
 			b.Vel = reflect(b.Vel, hit.n)
 		}
@@ -272,7 +285,7 @@ func (g *Game) firstContact(pos, d Vec) (best contact, ok bool) {
 	}
 	for r := range g.Bricks {
 		for c := range g.Bricks[r] {
-			if !g.Bricks[r][c].Alive {
+			if !g.Bricks[r][c].Alive() {
 				continue
 			}
 			t, n, hit := sweepAABB(pos, ballHalf, d, BrickRect(c, r))

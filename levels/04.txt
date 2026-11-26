@@ -1,0 +1,13 @@
+; Fortress: an outer ring around two walled keeps, open only from below.
+....................
+..aaaaaaaaaaaaaaaa..
+..a..............a..
+..a.####....####.a..
+..a.#bb2....2bb#.a..
+..a.#bb2.33.2bb#.a..
+..a.#cc2.33.2cc#.a..
+..a.#cc2....2cc#.a..
+..a..............a..
+..aaaaaaaaaaaaaaaa..
+....................
+e.e.e.e.e..e.e.e.e.e

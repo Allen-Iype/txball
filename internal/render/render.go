@@ -33,8 +33,18 @@ var (
 	colDim        = tcell.NewRGBColor(110, 110, 130)
 	colPaddle     = tcell.NewRGBColor(120, 210, 255)
 	colBall       = tcell.NewRGBColor(255, 255, 255)
-	colLife       = tcell.NewRGBColor(235, 80, 90)
-	colTitle      = tcell.NewRGBColor(255, 225, 120)
+	// armorShades is indexed by hits remaining, 1 to game.MaxArmor: the
+	// brick dulls as it weakens.
+	armorShades = [game.MaxArmor + 1]tcell.Color{
+		1: tcell.NewRGBColor(120, 122, 142),
+		2: tcell.NewRGBColor(178, 180, 200),
+		3: tcell.NewRGBColor(238, 238, 248),
+	}
+	colSolidLight = tcell.NewRGBColor(104, 96, 88)
+	colSolidDark  = tcell.NewRGBColor(58, 54, 50)
+
+	colLife  = tcell.NewRGBColor(235, 80, 90)
+	colTitle = tcell.NewRGBColor(255, 225, 120)
 
 	// overlayRow is the playfield cell row for messages: the gap between
 	// the lowest bricks and the paddle.
@@ -153,16 +163,34 @@ func (r *Renderer) rect(x, y, w, h float64, c tcell.Color) {
 	}
 }
 
-// bricks draws the grid. Each brick's last pixel column is shaded so that
-// neighbours of the same colour read as separate tiles.
+// bricks draws the grid. Each breakable brick's last pixel column is
+// shaded so that neighbours of the same colour read as separate tiles;
+// indestructible bricks are a two-tone checker instead.
 func (r *Renderer) bricks(grid *game.Grid) {
 	for row := range grid {
 		for col, b := range grid[row] {
-			if !b.Alive {
-				continue
-			}
-			c := brickPalette[int(b.Color)%len(brickPalette)]
 			box := game.BrickRect(col, row)
+			var c tcell.Color
+			switch b.Kind {
+			case game.BrickNone:
+				continue
+			case game.BrickSolid:
+				x0, y0 := int(box.Min.X), int(box.Min.Y)
+				for dy := range int(game.BrickH) {
+					for dx := range int(game.BrickW) {
+						c := colSolidLight
+						if (dx+dy)%2 == 1 {
+							c = colSolidDark
+						}
+						r.set(x0+dx, y0+dy, c)
+					}
+				}
+				continue
+			case game.BrickArmor:
+				c = armorShades[min(int(b.Hits), game.MaxArmor)]
+			default:
+				c = brickPalette[int(b.Color)%len(brickPalette)]
+			}
 			r.rect(box.Min.X, box.Min.Y, game.BrickW-1, game.BrickH, c)
 			r.rect(box.Max.X-1, box.Min.Y, 1, game.BrickH, shade(c, 0.6))
 		}

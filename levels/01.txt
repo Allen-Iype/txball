@@ -1,0 +1,8 @@
+; Bands: six plain rows split by a channel up the middle.
+....................
+.aaaaaaaa..aaaaaaaa.
+.bbbbbbbb..bbbbbbbb.
+.cccccccc..cccccccc.
+.dddddddd..dddddddd.
+.eeeeeeee..eeeeeeee.
+.ffffffff..ffffffff.

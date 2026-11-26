@@ -8,7 +8,10 @@ import (
 
 	"github.com/gdamore/tcell/v2"
 
+	"github.com/Allen-Iype/txball/internal/game"
+	"github.com/Allen-Iype/txball/internal/level"
 	"github.com/Allen-Iype/txball/internal/render"
+	"github.com/Allen-Iype/txball/levels"
 )
 
 func newSim(t *testing.T) tcell.SimulationScreen {
@@ -24,7 +27,11 @@ func newSim(t *testing.T) tcell.SimulationScreen {
 
 func runLoop(s tcell.Screen, ctx context.Context) <-chan error {
 	errc := make(chan error, 1)
-	go func() { errc <- loop(ctx, s, Options{Debug: true}) }()
+	grids, err := level.LoadAll(levels.FS)
+	if err != nil {
+		panic(err)
+	}
+	go func() { errc <- loop(ctx, s, game.New(grids), Options{Debug: true}) }()
 	return errc
 }
 

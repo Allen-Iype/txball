@@ -13,7 +13,9 @@ import (
 	"github.com/gdamore/tcell/v2"
 
 	"github.com/Allen-Iype/txball/internal/game"
+	"github.com/Allen-Iype/txball/internal/level"
 	"github.com/Allen-Iype/txball/internal/render"
+	"github.com/Allen-Iype/txball/levels"
 )
 
 const (
@@ -34,6 +36,8 @@ const (
 type Options struct {
 	// Debug shows FPS/UPS counters.
 	Debug bool
+	// Level is the 1-based level to start on; 0 means the first.
+	Level int
 	// PanicAfter, if non-zero, panics after that long. It exists to check
 	// that the terminal is restored when the game crashes.
 	PanicAfter time.Duration
@@ -41,6 +45,17 @@ type Options struct {
 
 // Run takes over the terminal and plays until the user quits.
 func Run(opts Options) (err error) {
+	// Load levels before touching the terminal, so a bad level file is
+	// reported on a normal screen.
+	grids, err := level.LoadAll(levels.FS)
+	if err != nil {
+		return fmt.Errorf("load levels: %w", err)
+	}
+	g := game.New(grids)
+	if opts.Level > 1 {
+		g.JumpTo(opts.Level)
+	}
+
 	s, err := tcell.NewScreen()
 	if err != nil {
 		return fmt.Errorf("open terminal: %w", err)
@@ -61,12 +76,12 @@ func Run(opts Options) (err error) {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM, syscall.SIGHUP)
 	defer stop()
 
-	return loop(ctx, s, opts)
+	return loop(ctx, s, g, opts)
 }
 
-// loop runs the game on an initialised screen until quit or ctx is done.
-// All game state is touched from this goroutine only.
-func loop(ctx context.Context, s tcell.Screen, opts Options) error {
+// loop runs g on an initialised screen until quit or ctx is done. All game
+// state is touched from this goroutine only.
+func loop(ctx context.Context, s tcell.Screen, g *game.Game, opts Options) error {
 	s.HideCursor()
 	s.EnableMouse(tcell.MouseMotionEvents)
 
@@ -88,7 +103,6 @@ func loop(ctx context.Context, s tcell.Screen, opts Options) error {
 	}()
 
 	var (
-		g     = game.New()
 		r     = render.New()
 		in    game.Input
 		stats = render.Stats{Show: opts.Debug}

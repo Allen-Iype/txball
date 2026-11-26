@@ -1,0 +1,9 @@
+; Pillars: five columns under solid caps, each with an armoured belt.
+....................
+.##..##..##..##..##.
+.gg..ff..ee..ff..gg.
+.gg..ff..ee..ff..gg.
+.33..22..33..22..33.
+.aa..bb..cc..bb..aa.
+.aa..bb..cc..bb..aa.
+.dd..dd..dd..dd..dd.
