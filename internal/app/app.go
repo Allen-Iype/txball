@@ -5,6 +5,7 @@ package app
 import (
 	"context"
 	"fmt"
+	"math/rand/v2"
 	"os"
 	"os/signal"
 	"syscall"
@@ -34,7 +35,7 @@ const (
 
 // Options configure a run.
 type Options struct {
-	// Debug shows FPS/UPS counters.
+	// Debug shows FPS/UPS counters and lets keys 1-7 drop a power-up.
 	Debug bool
 	// Level is the 1-based level to start on; 0 means the first.
 	Level int
@@ -51,7 +52,7 @@ func Run(opts Options) (err error) {
 	if err != nil {
 		return fmt.Errorf("load levels: %w", err)
 	}
-	g := game.New(grids)
+	g := game.New(grids, rand.New(rand.NewPCG(rand.Uint64(), rand.Uint64())))
 	if opts.Level > 1 {
 		g.JumpTo(opts.Level)
 	}
@@ -143,6 +144,9 @@ func loop(ctx context.Context, s tcell.Screen, g *game.Game, opts Options) error
 					case 'p', 'P':
 						in.Pause = true
 					}
+					if opts.Debug {
+						dropPower(g, ev.Rune())
+					}
 				}
 			case *tcell.EventMouse:
 				col, _ := ev.Position()
@@ -221,4 +225,17 @@ func steer(ev *tcell.EventKey) float64 {
 		}
 	}
 	return 0
+}
+
+// dropPower is a debugging aid: keys 1-7 release the corresponding
+// power-up capsule from the middle of the field.
+func dropPower(g *game.Game, key rune) {
+	k := int(key - '1')
+	if k < 0 || k >= game.NumPowers || g.State != game.StatePlaying {
+		return
+	}
+	g.Powerups = append(g.Powerups, game.Powerup{
+		Kind: game.PowerKind(k),
+		Pos:  game.Vec{X: g.Paddle.X, Y: game.Height / 2},
+	})
 }

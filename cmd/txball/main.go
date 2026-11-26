@@ -11,7 +11,7 @@ import (
 
 func main() {
 	var opts app.Options
-	flag.BoolVar(&opts.Debug, "debug", false, "show FPS/UPS counters")
+	flag.BoolVar(&opts.Debug, "debug", false, "show FPS/UPS counters; keys 1-7 drop a power-up")
 	flag.IntVar(&opts.Level, "level", 1, "level to start on")
 	flag.DurationVar(&opts.PanicAfter, "panic-after", 0, "panic after this long (tests terminal restore)")
 	flag.Parse()

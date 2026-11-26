@@ -31,7 +31,7 @@ func runLoop(s tcell.Screen, ctx context.Context) <-chan error {
 	if err != nil {
 		panic(err)
 	}
-	go func() { errc <- loop(ctx, s, game.New(grids), Options{Debug: true}) }()
+	go func() { errc <- loop(ctx, s, game.New(grids, nil), Options{Debug: true}) }()
 	return errc
 }
 

@@ -43,8 +43,11 @@ var (
 	colSolidLight = tcell.NewRGBColor(104, 96, 88)
 	colSolidDark  = tcell.NewRGBColor(58, 54, 50)
 
-	colLife  = tcell.NewRGBColor(235, 80, 90)
-	colTitle = tcell.NewRGBColor(255, 225, 120)
+	colLife = tcell.NewRGBColor(235, 80, 90)
+	colFire = tcell.NewRGBColor(255, 150, 40)
+	// colCapsuleText is the letter on a power-up capsule.
+	colCapsuleText = tcell.NewRGBColor(20, 20, 30)
+	colTitle       = tcell.NewRGBColor(255, 225, 120)
 
 	// overlayRow is the playfield cell row for messages: the gap between
 	// the lowest bricks and the paddle.
@@ -68,9 +71,17 @@ type Stats struct {
 	FPS, UPS int
 }
 
-// Renderer owns the pixel buffer so it is not reallocated every frame.
+// glyph is a character cell drawn in place of a half block.
+type glyph struct {
+	r  rune // zero means none
+	st tcell.Style
+}
+
+// Renderer owns the frame buffers so they are not reallocated every frame:
+// a pixel layer, and a layer of text cells that sit on top of it.
 type Renderer struct {
-	pix [game.Width * game.Height]tcell.Color
+	pix  [game.Width * game.Height]tcell.Color
+	text [rows][cols]glyph
 }
 
 // New returns a ready Renderer.
@@ -86,20 +97,39 @@ func (r *Renderer) Draw(s tcell.Screen, g *game.Game, st Stats) {
 	for i := range r.pix {
 		r.pix[i] = colBackground
 	}
+	r.text = [rows][cols]glyph{}
+
 	r.bricks(&g.Bricks)
-	r.rect(g.Paddle.Left(), game.PaddleTop, g.Paddle.W, game.PaddleHeight, colPaddle)
-	r.rect(g.Ball.Pos.X-game.BallSize/2, g.Ball.Pos.Y-game.BallSize/2, game.BallSize, game.BallSize, colBall)
+	r.rect(g.Paddle.Left(), game.PaddleTop, g.Paddle.W, game.PaddleHeight, paddleColor(g))
+	ballCol := colBall
+	if g.Active(game.PowerFire) {
+		ballCol = colFire
+	}
+	for _, b := range g.Balls {
+		r.rect(b.Pos.X-game.BallSize/2, b.Pos.Y-game.BallSize/2, game.BallSize, game.BallSize, ballCol)
+	}
+	for _, p := range g.Powerups {
+		r.capsule(p)
+	}
+	r.overlay(g)
 
 	// The screen is not cleared per frame (tcell would repaint every cell),
-	// so every cell is written exactly once: text rows are composed off
-	// screen, and the playfield skips the cells its overlay will cover.
-	msg := overlay(g)
-	r.flush(s, ox, oy, msg)
-	msg.draw(s, ox, oy+overlayRow)
+	// so every cell is written exactly once: flush emits either the text
+	// cell or the half block for each position, never both.
+	r.flush(s, ox, oy)
 	r.drawBorder(s, ox, oy, st, g)
 
 	hud := newLine(cols, ' ', tcell.StyleDefault)
 	hud.put(0, tcell.StyleDefault.Foreground(colText).Bold(true), "TX-Ball")
+	x := 9
+	for k, left := range g.Timers {
+		if left <= 0 {
+			continue
+		}
+		look := powerLooks[k]
+		hud.put(x, look.style(), string(look.letter))
+		x += 1 + hud.put(x+1, tcell.StyleDefault.Foreground(colDim), fmt.Sprintf("%-3d", int(math.Ceil(left))))
+	}
 	level := fmt.Sprintf("LEVEL %d", g.Level)
 	hud.put((cols-len(level))/2, tcell.StyleDefault.Foreground(colText), level)
 	score := fmt.Sprintf("%06d", g.Score)
@@ -109,9 +139,54 @@ func (r *Renderer) Draw(s tcell.Screen, g *game.Game, st Stats) {
 	hud.draw(s, ox, oy-2)
 }
 
-// overlay returns the message for the current state, centred on a
-// playfield-wide line whose untouched cells are transparent, or nil.
-func overlay(g *game.Game) *line {
+// paddleColor tints the paddle while it is sticky.
+func paddleColor(g *game.Game) tcell.Color {
+	if g.Active(game.PowerSticky) {
+		return powerLooks[game.PowerSticky].color
+	}
+	return colPaddle
+}
+
+// powerLook is how a power-up appears, as a capsule and in the HUD.
+type powerLook struct {
+	letter rune
+	color  tcell.Color
+}
+
+func (l powerLook) style() tcell.Style {
+	return tcell.StyleDefault.Background(l.color).Foreground(colCapsuleText).Bold(true)
+}
+
+var powerLooks = [game.NumPowers]powerLook{
+	game.PowerMulti:  {'M', tcell.NewRGBColor(90, 200, 250)},
+	game.PowerLong:   {'L', tcell.NewRGBColor(110, 220, 120)},
+	game.PowerShort:  {'S', tcell.NewRGBColor(240, 90, 90)},
+	game.PowerFire:   {'F', colFire},
+	game.PowerSticky: {'G', tcell.NewRGBColor(190, 230, 90)},
+	game.PowerSlow:   {'W', tcell.NewRGBColor(170, 150, 250)},
+	game.PowerLife:   {'+', tcell.NewRGBColor(250, 130, 190)},
+}
+
+// capsule draws a falling power-up as three text cells: its letter on a
+// coloured pill. Letters can't be drawn in half-block pixels, so capsules
+// move a whole cell row at a time.
+func (r *Renderer) capsule(p game.Powerup) {
+	look := powerLooks[p.Kind]
+	cy := int(math.Floor(p.Pos.Y / 2))
+	cx := int(math.Round(p.Pos.X - game.PowerW/2))
+	if cy < 0 || cy >= rows {
+		return
+	}
+	for i, ch := range [3]rune{' ', look.letter, ' '} {
+		if x := cx + i; x >= 0 && x < cols {
+			r.text[cy][x] = glyph{ch, look.style()}
+		}
+	}
+}
+
+// overlay writes the message for the current state, if it has one, into
+// the text layer.
+func (r *Renderer) overlay(g *game.Game) {
 	var title, hint string
 	switch g.State {
 	case game.StateServe:
@@ -123,21 +198,27 @@ func overlay(g *game.Game) *line {
 	case game.StateGameOver:
 		title, hint = "GAME OVER", fmt.Sprintf("score %d · click or space to play again", g.Score)
 	default:
-		return nil
+		return
 	}
-	l := newLine(cols, 0, tcell.StyleDefault)
-	text := hint
-	if title != "" {
-		text = title + "  " + hint
-	}
-	x := (cols - utf8.RuneCountInString(text)) / 2
 	base := tcell.StyleDefault.Background(colBackground)
-	if title != "" {
-		l.put(x, base.Foreground(colTitle).Bold(true), title+"  ")
-		x += utf8.RuneCountInString(title) + 2
+	put := func(x int, st tcell.Style, str string) int {
+		for _, ch := range str {
+			if x >= 0 && x < cols {
+				r.text[overlayRow][x] = glyph{ch, st}
+			}
+			x++
+		}
+		return x
 	}
-	l.put(x, base.Foreground(colText), hint)
-	return l
+	n := utf8.RuneCountInString(hint)
+	if title != "" {
+		n += utf8.RuneCountInString(title) + 2
+	}
+	x := (cols - n) / 2
+	if title != "" {
+		x = put(x, base.Foreground(colTitle).Bold(true), title+"  ")
+	}
+	put(x, base.Foreground(colText), hint)
 }
 
 // Origin returns the screen cell of the playfield's top-left corner for a
@@ -211,14 +292,15 @@ func (r *Renderer) set(x, y int, c tcell.Color) {
 	r.pix[y*game.Width+x] = c
 }
 
-// flush emits the pixel buffer as half blocks, leaving alone the cells of
-// the overlay row that skip (which may be nil) has text in.
-func (r *Renderer) flush(s tcell.Screen, ox, oy int, skip *line) {
+// flush emits the frame: a text cell where there is one, otherwise the
+// two pixels beneath it as a half block.
+func (r *Renderer) flush(s tcell.Screen, ox, oy int) {
 	for cy := range rows {
 		top := r.pix[2*cy*game.Width:]
 		bot := r.pix[(2*cy+1)*game.Width:]
 		for cx := range cols {
-			if cy == overlayRow && skip.covers(cx) {
+			if g := r.text[cy][cx]; g.r != 0 {
+				s.SetContent(ox+cx, oy+cy, g.r, nil, g.st)
 				continue
 			}
 			st := tcell.StyleDefault.Foreground(top[cx]).Background(bot[cx])
@@ -254,8 +336,8 @@ func (r *Renderer) drawBorder(s tcell.Screen, ox, oy int, stats Stats, g *game.G
 	bottom.draw(s, ox, b)
 }
 
-// line is one row of styled text, composed off-screen. Cells holding the
-// zero rune are transparent: draw leaves the screen alone there.
+// line is one row of styled text, composed off-screen so that each of its
+// cells is written to the screen exactly once.
 type line struct {
 	runes  []rune
 	styles []tcell.Style
@@ -269,28 +351,22 @@ func newLine(n int, fill rune, st tcell.Style) *line {
 	return l
 }
 
-// put writes str starting at column x, clipping to the line.
-func (l *line) put(x int, st tcell.Style, str string) {
+// put writes str starting at column x, clipping to the line, and returns
+// the number of columns str occupies.
+func (l *line) put(x int, st tcell.Style, str string) int {
+	n := 0
 	for _, ch := range str {
 		if x >= 0 && x < len(l.runes) {
 			l.runes[x], l.styles[x] = ch, st
 		}
 		x++
+		n++
 	}
-}
-
-// covers reports whether column x holds text. A nil line covers nothing.
-func (l *line) covers(x int) bool {
-	return l != nil && l.runes[x] != 0
+	return n
 }
 
 func (l *line) draw(s tcell.Screen, x, y int) {
-	if l == nil {
-		return
-	}
 	for i, ch := range l.runes {
-		if ch != 0 {
-			s.SetContent(x+i, y, ch, nil, l.styles[i])
-		}
+		s.SetContent(x+i, y, ch, nil, l.styles[i])
 	}
 }

@@ -3,7 +3,10 @@
 // half-block "pixel" on screen. X grows right, Y grows down.
 package game
 
-import "math"
+import (
+	"math"
+	"math/rand/v2"
+)
 
 // World dimensions in pixels. The playfield is fixed-size; the renderer
 // centres it in whatever terminal it gets.
@@ -106,6 +109,11 @@ func (p *Paddle) moveTo(x float64) {
 // Ball is a BallSize square; Pos is its centre.
 type Ball struct {
 	Pos, Vel Vec
+	// Stuck balls ride the paddle until launched. Offset is where on the
+	// paddle, from -1 (left edge) to +1 (right edge), which also sets the
+	// angle they leave at.
+	Stuck  bool
+	Offset float64
 }
 
 // Game is the whole simulation state.
@@ -121,9 +129,20 @@ type Game struct {
 	Score int
 
 	Paddle Paddle
-	Ball   Ball
+	// Balls are the balls in play. While serving there is exactly one,
+	// stuck to the paddle.
+	Balls  []Ball
 	Bricks Grid
 
+	// Powerups are the capsules currently falling.
+	Powerups []Powerup
+	// Timers holds the seconds left on each timed effect, by PowerKind.
+	Timers [NumPowers]float64
+	// DropChance is the chance that a destroyed brick drops a power-up.
+	DropChance float64
+
+	// rng decides power-up drops; nil means bricks never drop anything.
+	rng *rand.Rand
 	// levels are the layouts, played in order and then repeated.
 	levels []Grid
 	// since is how long the game has been in State.
@@ -134,15 +153,18 @@ type Game struct {
 
 // New returns a game at the start of level 1, waiting to serve. The layouts
 // are played in order, wrapping around after the last; there must be at
-// least one.
-func New(levels []Grid) *Game {
+// least one. rng drives power-up drops and may be nil for a game without
+// any.
+func New(levels []Grid, rng *rand.Rand) *Game {
 	if len(levels) == 0 {
 		panic("game: New needs at least one level")
 	}
 	g := &Game{
-		Lives:  StartLives,
-		Paddle: Paddle{X: Width / 2, W: PaddleWidth},
-		levels: levels,
+		Lives:      StartLives,
+		Paddle:     Paddle{X: Width / 2, W: PaddleWidth},
+		DropChance: PowerDropChance,
+		rng:        rng,
+		levels:     levels,
 	}
 	g.JumpTo(1)
 	return g
@@ -153,11 +175,10 @@ func New(levels []Grid) *Game {
 func (g *Game) JumpTo(level int) {
 	g.Level = max(level, 1)
 	g.Bricks = g.levels[(g.Level-1)%len(g.levels)]
-	g.parkBall()
-	g.setState(StateServe)
+	g.serve()
 }
 
-// BallSpeed returns the launch speed for the current level.
+// BallSpeed returns the ball speed for the current level, before effects.
 func (g *Game) BallSpeed() float64 {
 	return BallSpeed * (1 + min(float64(g.Level-1)*LevelSpeedup, MaxSpeedup))
 }
@@ -166,9 +187,40 @@ func (g *Game) setState(s State) {
 	g.State, g.since = s, 0
 }
 
-// parkBall rests the ball on the paddle at the serving spot.
-func (g *Game) parkBall() {
-	g.Ball = Ball{Pos: Vec{g.Paddle.X + serveOffset*g.Paddle.W/2, PaddleTop - ballHalf}}
+// clearRound drops everything that doesn't outlive a ball: the balls, the
+// falling capsules and the timed effects.
+func (g *Game) clearRound() {
+	g.Balls, g.Powerups = nil, nil
+	g.Timers = [NumPowers]float64{}
+	g.fitPaddle()
+}
+
+// serve starts a fresh round with one ball waiting on the paddle.
+func (g *Game) serve() {
+	g.clearRound()
+	g.Balls = []Ball{{Stuck: true, Offset: serveOffset, Pos: g.stuckPos(serveOffset)}}
+	g.setState(StateServe)
+}
+
+// fitPaddle sizes the paddle for the current effects and keeps it in the
+// field.
+func (g *Game) fitPaddle() {
+	g.Paddle.W = g.paddleWidth()
+	g.Paddle.moveTo(g.Paddle.X)
+}
+
+// stuckPos is where a ball stuck at the given offset sits.
+func (g *Game) stuckPos(offset float64) Vec {
+	return Vec{g.Paddle.X + offset*g.Paddle.W/2, PaddleTop - ballHalf}
+}
+
+// launch releases every ball stuck to the paddle.
+func (g *Game) launch() {
+	for i := range g.Balls {
+		if b := &g.Balls[i]; b.Stuck {
+			b.Stuck, b.Vel = false, paddleBounce(b.Offset, g.speed())
+		}
+	}
 }
 
 // Update advances the simulation by one fixed step of dt seconds.
@@ -189,6 +241,10 @@ func (g *Game) Update(dt float64, in Input) {
 	g.Time += dt
 	g.since += dt
 
+	if g.State == StatePlaying {
+		g.tickTimers(dt)
+	}
+	g.fitPaddle()
 	if in.HasMouse {
 		g.Paddle.moveTo(in.PaddleX)
 	}
@@ -198,24 +254,29 @@ func (g *Game) Update(dt float64, in Input) {
 
 	switch g.State {
 	case StateServe:
-		g.parkBall()
+		g.stepBalls(dt)
 		if in.Launch {
-			g.Ball.Vel = paddleBounce(serveOffset, g.BallSpeed())
+			g.launch()
 			g.setState(StatePlaying)
 		}
 
 	case StatePlaying:
-		g.moveBall(&g.Ball, dt)
+		if in.Launch {
+			g.launch()
+		}
+		g.stepBalls(dt)
+		g.stepPowerups(dt)
 		switch {
 		case g.Bricks.Remaining() == 0:
+			g.clearRound()
 			g.setState(StateLevelClear)
-		case g.Ball.Pos.Y-ballHalf > Height:
+		case len(g.Balls) == 0:
 			g.Lives--
 			if g.Lives <= 0 {
+				g.clearRound()
 				g.setState(StateGameOver)
 			} else {
-				g.parkBall()
-				g.setState(StateServe)
+				g.serve()
 			}
 		}
 
@@ -226,12 +287,35 @@ func (g *Game) Update(dt float64, in Input) {
 
 	case StateGameOver:
 		if in.Launch && g.since >= promptDelay {
-			paddle := g.Paddle
-			*g = *New(g.levels)
-			g.Paddle = paddle // don't yank it away from the mouse
-			g.parkBall()
+			paddle, chance := g.Paddle, g.DropChance
+			*g = *New(g.levels, g.rng)
+			g.Paddle, g.DropChance = paddle, chance // don't yank it away from the mouse
+			g.serve()
 		}
 	}
+}
+
+// stepBalls moves every ball one step and drops the ones that fall out of
+// the bottom. Stuck balls follow the paddle; the rest fly at the current
+// speed, whatever it was when they were last touched.
+func (g *Game) stepBalls(dt float64) {
+	speed := g.speed()
+	live := g.Balls[:0]
+	for _, b := range g.Balls {
+		if !b.Stuck {
+			if l := b.Vel.Len(); l > 0 {
+				b.Vel = b.Vel.Scale(speed / l)
+			}
+			g.moveBall(&b, dt)
+		}
+		if b.Stuck { // possibly only just caught
+			b.Pos = g.stuckPos(b.Offset)
+		}
+		if b.Pos.Y-ballHalf <= Height {
+			live = append(live, b)
+		}
+	}
+	g.Balls = live
 }
 
 // contact is the first thing a moving ball touches.
@@ -261,11 +345,28 @@ func (g *Game) moveBall(b *Ball, dt float64) {
 
 		switch {
 		case hit.paddle:
-			b.Vel = paddleBounce((b.Pos.X-g.Paddle.X)/(g.Paddle.W/2), b.Vel.Len())
+			offset := clamp((b.Pos.X-g.Paddle.X)/(g.Paddle.W/2), -1, 1)
+			if g.Active(PowerSticky) {
+				b.Stuck, b.Offset, b.Vel = true, offset, Vec{}
+				return
+			}
+			b.Vel = paddleBounce(offset, b.Vel.Len())
 		case hit.brick:
+			br := &g.Bricks[hit.r][hit.c]
+			if g.Active(PowerFire) && br.Breakable() {
+				// A fireball destroys the brick outright and carries
+				// straight on through where it stood.
+				g.Score += BrickScore * int(br.Hits)
+				*br = Brick{}
+				g.maybeDrop(hit.c, hit.r)
+				continue
+			}
 			b.Vel = reflect(b.Vel, hit.n)
-			if g.Bricks[hit.r][hit.c].hit() {
+			if br.hit() {
 				g.Score += BrickScore
+				if !br.Alive() {
+					g.maybeDrop(hit.c, hit.r)
+				}
 			}
 		default:
 			b.Vel = reflect(b.Vel, hit.n)
