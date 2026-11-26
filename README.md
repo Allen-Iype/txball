@@ -139,3 +139,7 @@ The GIF above is a terminal recording made with [VHS](https://github.com/charmbr
 ```sh
 vhs docs/demo.tape
 ```
+
+## License
+
+[MIT](LICENSE)
