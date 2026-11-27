@@ -1,6 +1,9 @@
 # TX-Ball
 
 [![CI](https://github.com/Allen-Iype/txball/actions/workflows/ci.yml/badge.svg)](https://github.com/Allen-Iype/txball/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/Allen-Iype/txball)](https://github.com/Allen-Iype/txball/releases/latest)
+[![Go Reference](https://pkg.go.dev/badge/github.com/Allen-Iype/txball.svg)](https://pkg.go.dev/github.com/Allen-Iype/txball)
+[![Go Report Card](https://goreportcard.com/badge/github.com/Allen-Iype/txball)](https://goreportcard.com/report/github.com/Allen-Iype/txball)
 
 A brick-breaker for the terminal, written in Go with [tcell](https://github.com/gdamore/tcell).
 Mouse-controlled paddle, half-block graphics, levels in plain text files and seven power-ups.
@@ -9,18 +12,29 @@ Mouse-controlled paddle, half-block graphics, levels in plain text files and sev
 
 ## Install
 
+**Download a binary.** Grab the archive for your system from the
+[latest release](https://github.com/Allen-Iype/txball/releases/latest) (macOS, Linux and Windows,
+Intel and ARM), unpack it and run `txball`.
+
+On macOS, a binary downloaded with a browser is quarantined because it isn't signed. Clear that
+once with:
+
+```sh
+xattr -d com.apple.quarantine ./txball
+```
+
+**Or build it with Go** (1.25 or newer):
+
 ```sh
 go install github.com/Allen-Iype/txball/cmd/txball@latest
 txball
 ```
 
-Or from a checkout:
+**Or run from a checkout:**
 
 ```sh
 go run ./cmd/txball
 ```
-
-Needs Go 1.25 or newer.
 
 ### Terminal requirements
 
@@ -81,6 +95,7 @@ You only lose a life when the last ball is gone.
 | `-bell` | Ring the terminal bell when a ball hits a brick or the paddle, and when a life is lost |
 | `-level N` | Start on level N |
 | `-demo` | Let the game play itself |
+| `-version` | Print the version and exit |
 | `-debug` | Show FPS and update rate; keys `1`–`7` drop a capsule of each kind |
 
 The high score is kept in `$XDG_CONFIG_HOME/txball/highscore`, or `~/.config/txball/highscore`
@@ -134,6 +149,9 @@ The simulation runs at a fixed 120 updates per second in floating-point world co
 one unit is one half-block "pixel"; the renderer draws at 60 frames per second and is the only
 place positions are rounded. Ball movement is swept rather than stepped, so a ball can't pass
 through a brick however fast it is going.
+
+Releases are built by [GoReleaser](https://goreleaser.com) when a `v*` tag is pushed; see
+`.goreleaser.yaml`.
 
 The GIF above is a terminal recording made with [VHS](https://github.com/charmbracelet/vhs) from
 `docs/demo.tape`, using `-demo` because VHS can't move a mouse. To re-record it:

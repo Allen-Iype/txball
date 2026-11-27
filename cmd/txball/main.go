@@ -5,9 +5,13 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"runtime/debug"
 
 	"github.com/Allen-Iype/txball/internal/app"
 )
+
+// version is set by the release build (-ldflags "-X main.version=...").
+var version string
 
 func main() {
 	var opts app.Options
@@ -16,10 +20,28 @@ func main() {
 	flag.BoolVar(&opts.Demo, "demo", false, "let the game play itself")
 	flag.IntVar(&opts.Level, "level", 1, "level to start on")
 	flag.DurationVar(&opts.PanicAfter, "panic-after", 0, "panic after this long (tests terminal restore)")
+	showVersion := flag.Bool("version", false, "print the version and exit")
 	flag.Parse()
+
+	if *showVersion {
+		fmt.Println("txball", buildVersion())
+		return
+	}
 
 	if err := app.Run(opts); err != nil {
 		fmt.Fprintln(os.Stderr, "txball:", err)
 		os.Exit(1)
 	}
+}
+
+// buildVersion reports the release version, falling back to the module
+// version that "go install" records, and then to "dev" for local builds.
+func buildVersion() string {
+	if version != "" {
+		return version
+	}
+	if info, ok := debug.ReadBuildInfo(); ok && info.Main.Version != "" && info.Main.Version != "(devel)" {
+		return info.Main.Version
+	}
+	return "dev"
 }

@@ -1,3 +1,4 @@
 /txball
 *.test
 *.out
+/dist/
