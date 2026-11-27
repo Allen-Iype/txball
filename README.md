@@ -3,7 +3,6 @@
 [![CI](https://github.com/Allen-Iype/txball/actions/workflows/ci.yml/badge.svg)](https://github.com/Allen-Iype/txball/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/Allen-Iype/txball)](https://github.com/Allen-Iype/txball/releases/latest)
 [![Go Reference](https://pkg.go.dev/badge/github.com/Allen-Iype/txball.svg)](https://pkg.go.dev/github.com/Allen-Iype/txball)
-[![Go Report Card](https://goreportcard.com/badge/github.com/Allen-Iype/txball)](https://goreportcard.com/report/github.com/Allen-Iype/txball)
 
 A brick-breaker for the terminal, written in Go with [tcell](https://github.com/gdamore/tcell).
 Mouse-controlled paddle, half-block graphics, levels in plain text files and seven power-ups.
